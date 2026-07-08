@@ -40,10 +40,18 @@ Apps Script editor -> Project Settings (gear) -> Script Properties -> add:
 (`SHEET_ID` and `DRIVE_FOLDER_ID` are created for you in step 5.)
 
 ## 4. Create the master CV Google Doc
+Easiest: run **`buildMasterCv()`** once in the editor. It generates a clean, ATS-safe
+single-column Doc (bold headers, section rules, real bullets, a `{{SUMMARY}}` token) from
+your profile with placeholder experience, and sets `MASTER_CV_DOC_ID` for you. Open the
+logged Doc and replace the placeholders with your real history (keep it single column, keep
+`{{SUMMARY}}`).
+
+Or build it by hand:
 1. Make a Google Doc from `cv/TEMPLATE-CV.md` (clean, single column - ATS safe) with your
    real experience.
 2. Replace the professional-summary paragraph with the literal token `{{SUMMARY}}`.
 3. Copy the Doc's ID from its URL and set it as `MASTER_CV_DOC_ID`.
+
 Per role, the loop copies this Doc and swaps `{{SUMMARY}}` for a tailored summary.
 
 ## 5. Bootstrap

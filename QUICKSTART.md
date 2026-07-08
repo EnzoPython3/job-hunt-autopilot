@@ -91,6 +91,13 @@ You can come back and change any answer any time - fill it in and Save again.
 
 ## Part 5 - Add your CV
 
+**Easy way (recommended):** in the script tab, choose **`buildMasterCv`** in the function
+dropdown and click **Run**. It creates a clean, ATS-safe master CV Doc (formatted for you,
+with the `{{SUMMARY}}` token) and wires up `MASTER_CV_DOC_ID` automatically. Then open that
+Doc (the link is in the Execution log) and replace the placeholder experience/education with
+your real history - **keep it single column and keep the `{{SUMMARY}}` line**. Done.
+
+**Manual way:** if you'd rather build it yourself:
 1. Open **`cv/TEMPLATE-CV.md`** from this pack. Make a **Google Doc** version of your real CV
    using it as a guide (keep it simple: one column, no tables or images).
 2. Where your personal summary goes, type the exact text **`{{SUMMARY}}`** (with the double

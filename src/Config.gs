@@ -139,9 +139,13 @@ const Config = {
   // resolved URL, so it also catches boards hidden behind an Adzuna redirect.
   // Default: exclude nothing.
   excludedDomains() {
+    // Global hard-exclusions that always ship, regardless of config: whatjobs links
+    // route to a search page, not the actual listing.
+    const ALWAYS = ['whatjobs'];
     const raw = this.get('EXCLUDED_DOMAINS');
-    if (raw === null || raw === '') return [];
-    return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+    const user = (raw === null || raw === '') ? []
+      : String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+    return ALWAYS.concat(user.filter(function (d) { return ALWAYS.indexOf(d) === -1; }));
   },
 
   // Allowed regions for the location filter (STRICT allow-list), comma-separated in

@@ -117,17 +117,22 @@ const Sources = {
     return /\bremote\b|work from home|wfh/.test(String(job.location || '').toLowerCase());
   },
 
-  // Location gate: keep remote (if allowed), allowed-region matches, and jobs
-  // whose location we cannot confidently read (blank). Only jobs confidently
-  // located outside the allowed regions are dropped.
+  // Location gate. Remote (globally) is always kept. Strict exclusions drop a job
+  // even if it is otherwise in range. When an allow-list is set, a job is kept only
+  // if its location matches it; a job with no readable location is dropped (strict).
   locationOk_(job) {
-    const regions = Config.allowedRegions();
-    if (!regions.length) return true;                          // no restriction configured
-    if (Config.allowRemote() && this.isRemote_(job)) return true;
+    if (Config.allowRemote() && this.isRemote_(job)) return true;   // remote anywhere
+
     const loc = String(job.location || '').trim().toLowerCase();
-    if (!loc) return true;                                     // can't confidently place -> include
-    for (let i = 0; i < regions.length; i++) if (loc.indexOf(regions[i]) !== -1) return true;
-    return false;                                              // confidently outside allowed regions
+
+    const blocked = Config.excludedRegions();
+    if (loc) for (let i = 0; i < blocked.length; i++) if (loc.indexOf(blocked[i]) !== -1) return false;
+
+    const allowed = Config.allowedRegions();
+    if (!allowed.length) return true;                          // no allow-list -> keep the rest
+    if (!loc) return false;                                    // allow-list set + no location -> drop
+    for (let j = 0; j < allowed.length; j++) if (loc.indexOf(allowed[j]) !== -1) return true;
+    return false;                                              // located outside the range -> drop
   },
 
   /**

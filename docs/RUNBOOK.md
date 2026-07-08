@@ -29,7 +29,8 @@ Run `draftAgencyOutreach` (or let it run on a light schedule). It creates one Gm
 
 ## Ingest filters (Setup tab, or Script Properties)
 Applied at ingest, before a job is even stored, so they save Gemini scoring quota:
-- `ALLOWED_REGIONS` (comma-separated, blank = anywhere): keep a job if it is remote, its location matches one of these (e.g. `gauteng,johannesburg`), or its location can't be read; only jobs confidently located elsewhere are dropped.
+- `ALLOWED_REGIONS` (comma-separated, blank = anywhere): STRICT allow-list. When set, keep a job only if it is remote or its location matches one of these (e.g. `sandton,midrand,johannesburg`); jobs located elsewhere or with no readable location are dropped.
+- `EXCLUDED_REGIONS` (comma-separated, blank = none): drop these sub-areas even when they fall inside the allowed range (e.g. `kempton park,pretoria,soweto`). Remote still overrides.
 - `ALLOW_REMOTE` (`true`/`false`, default `true`): keep remote jobs from anywhere, even when regions are restricted.
 - `EXCLUDED_DOMAINS` (comma-separated, e.g. `careers24`): hard-drop jobs from these boards. Matched against source and the resolved URL (so Adzuna redirects are caught too).
 - `TAILOR_FOR_PORTALS` (`true`/`false`, default `true`): `false` tailors a CV + cover only for jobs with a contact email; portal roles then just get a link to apply by hand.

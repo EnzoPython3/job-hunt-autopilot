@@ -144,13 +144,22 @@ const Config = {
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
 
-  // Allowed regions for the location filter, comma-separated in Script Property
-  // ALLOWED_REGIONS (e.g. "gauteng,johannesburg,cape town"). A job is kept if it is
-  // remote (see allowRemote), its location matches one of these, OR its location
-  // can't be read (blank - benefit of the doubt); only jobs confidently located
-  // elsewhere are dropped. Default: EMPTY = no location restriction.
+  // Allowed regions for the location filter (STRICT allow-list), comma-separated in
+  // Script Property ALLOWED_REGIONS (e.g. "gauteng,johannesburg,cape town"). When set,
+  // a job is kept only if it is remote OR its location matches one of these; jobs
+  // located elsewhere, and jobs with no readable location, are dropped. Pair with
+  // excludedRegions to carve out sub-areas. Default: EMPTY = no location restriction.
   allowedRegions() {
     const raw = this.get('ALLOWED_REGIONS');
+    if (raw === null || raw === '') return [];
+    return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  },
+
+  // Regions to hard-exclude even if otherwise in range, comma-separated in Script
+  // Property EXCLUDED_REGIONS (e.g. "pretoria,vaal"). Dropped unless the job is
+  // remote. Default: EMPTY = exclude nothing.
+  excludedRegions() {
+    const raw = this.get('EXCLUDED_REGIONS');
     if (raw === null || raw === '') return [];
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },

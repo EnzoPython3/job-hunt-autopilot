@@ -155,13 +155,22 @@ const Config = {
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
 
-  // Allowed regions for the location filter, comma-separated in Script Property
-  // ALLOWED_REGIONS (e.g. "gauteng,johannesburg,cape town"). A job is kept if it is
-  // remote (see allowRemote), its location matches one of these, OR its location
-  // can't be read (blank - benefit of the doubt); only jobs confidently located
-  // elsewhere are dropped. Default: EMPTY = no location restriction.
+  // Allowed regions for the location filter (STRICT allow-list), comma-separated in
+  // Script Property ALLOWED_REGIONS (e.g. "gauteng,johannesburg,cape town"). When set,
+  // a job is kept only if it is remote OR its location matches one of these; jobs
+  // located elsewhere, and jobs with no readable location, are dropped. Pair with
+  // excludedRegions to carve out sub-areas. Default: EMPTY = no location restriction.
   allowedRegions() {
     const raw = this.get('ALLOWED_REGIONS');
+    if (raw === null || raw === '') return [];
+    return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  },
+
+  // Regions to hard-exclude even if otherwise in range, comma-separated in Script
+  // Property EXCLUDED_REGIONS (e.g. "pretoria,vaal"). Dropped unless the job is
+  // remote. Default: EMPTY = exclude nothing.
+  excludedRegions() {
+    const raw = this.get('EXCLUDED_REGIONS');
     if (raw === null || raw === '') return [];
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
@@ -612,17 +621,22 @@ const Sources = {
     return /\bremote\b|work from home|wfh/.test(String(job.location || '').toLowerCase());
   },
 
-  // Location gate: keep remote (if allowed), allowed-region matches, and jobs
-  // whose location we cannot confidently read (blank). Only jobs confidently
-  // located outside the allowed regions are dropped.
+  // Location gate. Remote (globally) is always kept. Strict exclusions drop a job
+  // even if it is otherwise in range. When an allow-list is set, a job is kept only
+  // if its location matches it; a job with no readable location is dropped (strict).
   locationOk_(job) {
-    const regions = Config.allowedRegions();
-    if (!regions.length) return true;                          // no restriction configured
-    if (Config.allowRemote() && this.isRemote_(job)) return true;
+    if (Config.allowRemote() && this.isRemote_(job)) return true;   // remote anywhere
+
     const loc = String(job.location || '').trim().toLowerCase();
-    if (!loc) return true;                                     // can't confidently place -> include
-    for (let i = 0; i < regions.length; i++) if (loc.indexOf(regions[i]) !== -1) return true;
-    return false;                                              // confidently outside allowed regions
+
+    const blocked = Config.excludedRegions();
+    if (loc) for (let i = 0; i < blocked.length; i++) if (loc.indexOf(blocked[i]) !== -1) return false;
+
+    const allowed = Config.allowedRegions();
+    if (!allowed.length) return true;                          // no allow-list -> keep the rest
+    if (!loc) return false;                                    // allow-list set + no location -> drop
+    for (let j = 0; j < allowed.length; j++) if (loc.indexOf(allowed[j]) !== -1) return true;
+    return false;                                              // located outside the range -> drop
   },
 
   /**
@@ -1572,7 +1586,8 @@ const SETUP_FIELDS = [
   { type: 'prop',   label: 'RapidAPI key (optional, for JSearch)', target: 'RAPIDAPI_KEY', secret: true },
   { type: 'prop',   label: 'Master CV Google Doc ID (the Doc that contains a {{SUMMARY}} token)', target: 'MASTER_CV_DOC_ID' },
   { type: 'section', label: 'SEARCH FILTERS  -  optional; leave blank to keep the defaults in brackets' },
-  { type: 'prop',   label: 'Restrict to regions, comma-separated (blank = anywhere)',                 target: 'ALLOWED_REGIONS' },
+  { type: 'prop',   label: 'Keep ONLY these regions, comma-separated (blank = anywhere)',              target: 'ALLOWED_REGIONS' },
+  { type: 'prop',   label: 'Drop these sub-areas even if in range, comma-separated (blank = none)',    target: 'EXCLUDED_REGIONS' },
   { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: 'ALLOW_REMOTE' },
   { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: 'EXCLUDED_DOMAINS' },
   { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: 'TAILOR_FOR_PORTALS' },

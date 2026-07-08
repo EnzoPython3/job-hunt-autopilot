@@ -1,0 +1,13 @@
+.DS_Store
+node_modules/
+npm-debug.log*
+
+# clasp local link (contains your scriptId) - keep it out of git
+.clasp.json
+
+# secrets / local config - never commit
+.env
+config.json
+config.local.json
+credentials.json
+*.local

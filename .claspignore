@@ -1,0 +1,4 @@
+# Patterns are relative to rootDir ("src" in .clasp.json).
+# Only Apps Script files (.gs) and appsscript.json are pushed; nothing else here.
+node_modules/**
+**/*.md

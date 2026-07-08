@@ -25,6 +25,11 @@ One Google Sheet ("Job-Hunt CRM"), created by `setupProject()`. Tabs and columns
 ## KPIs (weekly rollup)
 `week_start, sourced, scored, queued, approved, submitted, sent, responses, interviews, notes`
 
+Written automatically by `weeklyReport()` (Mon 07:00): one row per week (keyed on that
+week's Monday, refreshed if it runs again the same week). Figures are running totals from
+the Opportunities/Approvals tabs - `interviews` counts rows with an `interview_date` or a
+status of `interview`/`offer`, so it never drops when a role moves on to an offer.
+
 ## Config (editable knobs - override defaults without a redeploy)
 `key, value` - e.g. `SCORE_THRESHOLD`, `DAILY_SOURCE_CAP`, `CHUNK_SIZE`, `AGENCY_DRAFTS_PER_RUN`.
 

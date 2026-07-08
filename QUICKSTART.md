@@ -71,8 +71,10 @@ In the spreadsheet you just opened, go to the **Setup** tab (first tab).
 2. Paste your keys from Part 1 into the **API KEYS** rows (Gemini, Adzuna App ID, Adzuna App
    Key, and RapidAPI if you got one).
 3. (Optional) Under **SEARCH FILTERS**, narrow things down:
-   - **Restrict to regions** - e.g. `Gauteng` (or `Gauteng, Cape Town`) to keep only jobs in
-     those areas. Blank = anywhere.
+   - **Keep only these regions** - e.g. `Sandton, Midrand, Johannesburg` to keep only jobs in
+     those areas. Blank = anywhere. (Remote jobs and jobs with no stated location still pass.)
+   - **Drop these sub-areas** - e.g. `kempton park, pretoria` to drop specific places even when
+     they fall inside a kept region. Blank = none.
    - **Allow remote from anywhere** - `true` keeps remote jobs worldwide even when you've
      restricted regions; `false` to drop them.
    - **Exclude job boards** - e.g. `careers24` to never see jobs from a board you dislike.

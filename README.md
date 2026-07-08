@@ -61,8 +61,8 @@ Goal: help book **2-5 interviews/week**.
   token (see QUICKSTART step on the CV).
 
 ## Get started
-- **Non-technical:** [QUICKSTART.md](QUICKSTART.md) - paste one file into script.google.com,
-  add your keys, run two functions.
+- **Non-technical:** double-click **`START-HERE.html`** (opens in any browser, no internet
+  needed) for the friendly step-by-step. Same content as [QUICKSTART.md](QUICKSTART.md).
 - **Technical (clasp):** [docs/SETUP.md](docs/SETUP.md) - prerequisites, project structure,
   `clasp` push `src/`, set Script Properties, run `setupProject()`, then `installTriggers()`.
   Rebuild the paste bundle after editing `src/` with `bash tools/bundle.sh`.

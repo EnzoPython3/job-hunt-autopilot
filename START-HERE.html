@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job-Hunt Autopilot - Setup Guide</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1c2430; --mut:#5b6675; --line:#e5e8ee;
+    --brand:#2f6df6; --brand-soft:#eaf1ff; --good:#12855a; --good-soft:#e6f6ee;
+    --warn:#8a5a00; --warn-soft:#fff4e0; --radius:14px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1420; --card:#161d2b; --ink:#eaeef6; --mut:#9aa6ba; --line:#26304180;
+      --brand:#6ea0ff; --brand-soft:#1a2740; --good:#4bd39a; --good-soft:#132a22;
+      --warn:#e7b062; --warn-soft:#2a2213; --radius:14px;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:760px; margin:0 auto; padding:32px 20px 72px}
+  header.hero{
+    background:linear-gradient(135deg,var(--brand-soft),transparent);
+    border:1px solid var(--line); border-radius:var(--radius); padding:28px 26px; margin-bottom:26px;
+  }
+  .kicker{font-size:13px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--brand); margin:0 0 8px}
+  h1{margin:0 0 10px; font-size:30px; line-height:1.15; letter-spacing:-.01em}
+  .lede{margin:0; color:var(--mut); font-size:17px}
+  .time{display:inline-block; margin-top:14px; font-size:14px; color:var(--mut); background:var(--card); border:1px solid var(--line); padding:5px 12px; border-radius:999px}
+  .callout{border-radius:var(--radius); padding:14px 16px; margin:18px 0; border:1px solid var(--line)}
+  .callout.good{background:var(--good-soft); border-color:transparent}
+  .callout.warn{background:var(--warn-soft); border-color:transparent}
+  .callout strong{color:var(--ink)}
+  h2.sec{font-size:14px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); margin:34px 0 14px}
+  .step{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:20px 22px; margin:14px 0; position:relative;
+  }
+  .step h3{margin:0 0 8px; font-size:19px; display:flex; align-items:center; gap:12px}
+  .num{
+    flex:0 0 auto; width:30px; height:30px; border-radius:9px; background:var(--brand); color:#fff;
+    font-size:15px; font-weight:700; display:grid; place-items:center;
+  }
+  .step p{margin:8px 0}
+  .step ol,.step ul{margin:8px 0; padding-left:22px}
+  .step li{margin:6px 0}
+  code,kbd{
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.88em;
+    background:var(--brand-soft); color:var(--ink); padding:2px 6px; border-radius:6px; white-space:nowrap;
+  }
+  a{color:var(--brand)}
+  .muted{color:var(--mut); font-size:14.5px}
+  details{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:6px 18px; margin-top:16px}
+  summary{cursor:pointer; font-weight:600; padding:12px 0}
+  footer{margin-top:40px; color:var(--mut); font-size:13.5px; text-align:center}
+  .pill{display:inline-block; background:var(--brand-soft); color:var(--brand); font-weight:600; font-size:13px; padding:2px 9px; border-radius:999px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">Job-Hunt Autopilot</p>
+    <h1>Your morning job-search assistant</h1>
+    <p class="lede">It runs inside your own Google account. Every morning it finds jobs that fit you, writes a tailored CV and cover letter for the ones you approve, and prepares email drafts ready for you to review.</p>
+    <span class="time">No coding needed &nbsp;·&nbsp; about 30-40 minutes to set up</span>
+  </header>
+
+  <div class="callout good">
+    <strong>It never sends anything by itself.</strong> You always approve, then click send yourself. Think of it as an assistant that does the boring 90%, not a robot that applies for you.
+  </div>
+
+  <h2 class="sec">Before you start</h2>
+  <div class="step">
+    <p>You need two things:</p>
+    <ul>
+      <li>A <strong>Google account</strong> (Gmail). The tool lives here and prepares drafts from here.</li>
+      <li><strong>Three free keys</strong> you will collect in Step 1. No credit card, ever.</li>
+    </ul>
+  </div>
+
+  <h2 class="sec">The setup</h2>
+
+  <div class="step">
+    <h3><span class="num">1</span> Get your three free keys</h3>
+    <p class="muted">Open each link, sign in, and copy the key into a blank note for now. You will paste them in Step 4.</p>
+    <ul>
+      <li><strong>Gemini</strong> (the AI brain) - <a href="https://aistudio.google.com/app/apikey">aistudio.google.com/app/apikey</a> &rarr; <em>Create API key</em>. Free.</li>
+      <li><strong>Adzuna</strong> (a job source) - <a href="https://developer.adzuna.com">developer.adzuna.com</a> &rarr; sign up &rarr; copy your <strong>App ID</strong> and <strong>App Key</strong>. Free.</li>
+      <li><strong>RapidAPI / JSearch</strong> (extra job coverage, optional) - <a href="https://rapidapi.com">rapidapi.com</a> &rarr; search <strong>JSearch</strong> &rarr; Subscribe &rarr; <strong>Free</strong> plan &rarr; copy your key. Adds LinkedIn/Indeed/Glassdoor-style results. You can skip it and add it later.</li>
+    </ul>
+  </div>
+
+  <div class="step">
+    <h3><span class="num">2</span> Paste in the program (no terminal)</h3>
+    <ol>
+      <li>Go to <a href="https://script.google.com">script.google.com</a> and click <strong>New project</strong>.</li>
+      <li>You will see a file called <code>Code.gs</code> with a couple of lines. Select all of it and delete it.</li>
+      <li>Open <code>manual-install/Code.gs</code> from this pack, select <strong>everything</strong>, copy it, and paste it into the empty <code>Code.gs</code>. Press <strong>Save</strong> (the disk icon).</li>
+      <li>Rename the project (top-left) to <strong>Job-Hunt Autopilot</strong>.</li>
+    </ol>
+    <p class="muted">That is the whole program pasted in. You do not need to understand it.</p>
+  </div>
+
+  <div class="step">
+    <h3><span class="num">3</span> Create your dashboard sheet</h3>
+    <ol>
+      <li>In the toolbar, open the <strong>function dropdown</strong> (it says something like <code>myFunction</code>) and choose <code>setupProject</code>.</li>
+      <li>Click <strong>Run</strong>. Google asks you to <strong>review permissions</strong> - choose your account, click <strong>Advanced</strong> &rarr; <strong>Go to Job-Hunt Autopilot (unsafe)</strong> &rarr; <strong>Allow</strong>. This is normal: it is your own script asking to use your Sheets, Drive and Gmail.</li>
+      <li>Open the <strong>Execution log</strong> at the bottom - it prints a link to your new <strong>Job-Hunt CRM</strong> spreadsheet. Open it and keep the tab handy. This sheet is your whole dashboard.</li>
+    </ol>
+  </div>
+
+  <div class="step">
+    <h3><span class="num">4</span> Answer the questions</h3>
+    <p>In the spreadsheet, go to the <strong>Setup</strong> tab (the first tab).</p>
+    <ol>
+      <li>Fill in <strong>column B</strong> next to each question: your name, email, phone, location, LinkedIn, the roles you want, your skills, and a one-line summary. Some cells hold an example - just type over them.</li>
+      <li>Paste your keys from Step 1 into the <strong>API KEYS</strong> rows.</li>
+      <li><span class="pill">Optional</span> Under <strong>Search filters</strong>: keep only certain regions, drop specific sub-areas, allow remote from anywhere, exclude job boards you dislike, and choose whether to tailor documents for portal roles or email applications only. Leave blank to search everywhere.</li>
+      <li>Tick the <strong>Save</strong> checkbox at the bottom. If nothing happens (the box only works after Step 6), instead choose <code>applySetup</code> in the function dropdown and Run.</li>
+    </ol>
+    <p class="muted">Your keys are stored securely and the cells are cleared on purpose. Come back and change any answer any time, then Save again.</p>
+  </div>
+
+  <div class="step">
+    <h3><span class="num">5</span> Add your CV</h3>
+    <p><strong>The easy way:</strong> choose <code>buildMasterCv</code> in the function dropdown and click <strong>Run</strong>. It creates a clean, ATS-friendly CV document for you (with a <code>{{SUMMARY}}</code> placeholder the tool fills per job) and links it up automatically. Then open that document (link in the Execution log) and replace the example experience with your real history. Keep it a single column and keep the <code>{{SUMMARY}}</code> line.</p>
+    <p class="muted">ATS-friendly means simple and single-column, so the automated systems employers use can read it properly.</p>
+  </div>
+
+  <div class="step">
+    <h3><span class="num">6</span> Test it, then turn on autopilot</h3>
+    <p>Run these one at a time from the function dropdown, checking the sheet after each:</p>
+    <ol>
+      <li><code>dailySource</code> - jobs appear on the <strong>Opportunities</strong> tab.</li>
+      <li><code>scoreQueue</code> - the AI scores them; strong ones show on the <strong>Approvals</strong> tab.</li>
+      <li>On <strong>Approvals</strong>, pick <strong>Approve</strong> for one job.</li>
+      <li><code>prepApprovedBatch</code> - a tailored CV and cover PDF land in your Drive, and (if the job listed an email) a <strong>draft</strong> appears in Gmail.</li>
+    </ol>
+    <p>Happy with that? Run <code>installTriggers</code> once. From now on it runs <strong>every morning by itself</strong>.</p>
+    <div class="callout warn">
+      <strong>Timezone:</strong> the daily run is set to 06:00 Johannesburg time. To change it, open <strong>Project Settings</strong> in the script tab and set your timezone (or ask whoever gave you this pack).
+    </div>
+  </div>
+
+  <h2 class="sec">Your daily 10 minutes</h2>
+  <div class="step">
+    <ol>
+      <li>Open the sheet &rarr; <strong>Approvals</strong> tab. Read the role, company, score and reasoning, open the link, and pick <strong>Approve</strong> or <strong>Skip</strong>.</li>
+      <li>A bit later, open <strong>Gmail &rarr; Drafts</strong>. Review each prepared email, tweak it, and <strong>send</strong>. For portal-only jobs, open the link and apply by hand using the CV and cover from your Drive.</li>
+      <li>On the <strong>Opportunities</strong> tab, set the <code>status</code> to <strong>sent</strong> or <strong>submitted</strong> (the date fills in for you). Later mark <strong>responded</strong> or <strong>interview</strong> as things progress.</li>
+    </ol>
+    <p class="muted">The sheet's <strong>Readme</strong> tab has this same guide, always one click away.</p>
+  </div>
+
+  <h2 class="sec">Good to know</h2>
+  <div class="step">
+    <ul>
+      <li>All three services have <strong>free tiers</strong> - in practice about one run per morning, plenty for a real job search. No card required.</li>
+      <li>The AI is grounded in the facts you provide. <strong>It will not invent jobs, employers or numbers</strong>, and your salary is never printed anywhere.</li>
+      <li>Something looks wrong? Run <code>diagnose</code> in the script tab - it checks each key and job source and tells you what is missing.</li>
+    </ul>
+  </div>
+
+  <details>
+    <summary>For developers - the terminal (clasp) path</summary>
+    <p class="muted">If you are comfortable with a terminal, you can deploy the split <code>src/</code> files with <code>clasp</code> instead of pasting the bundle. See <code>docs/SETUP.md</code> in this pack for the flow, then do Steps 4-6 above the same way. Tuning knobs and the daily runbook are in <code>docs/RUNBOOK.md</code>; the sheet layout is in <code>docs/SHEET_SCHEMA.md</code>.</p>
+  </details>
+
+  <footer>
+    Job-Hunt Autopilot &nbsp;·&nbsp; assisted, never automatic &nbsp;·&nbsp; everything stays a draft until you send it.
+  </footer>
+
+</div>
+</body>
+</html>

@@ -11,6 +11,7 @@ function installTriggers() {
   ScriptApp.newTrigger('followUps').timeBased().everyDays(1).atHour(8).create();
   ScriptApp.newTrigger('prepInterviews').timeBased().everyDays(1).atHour(9).create();
   ScriptApp.newTrigger('weeklyReport').timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(7).create();
+  ScriptApp.newTrigger('pruneDeadLinks').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(5).create();
   // Auto-stamp applied_date when you pick sent/submitted in the status dropdown.
   ScriptApp.newTrigger('onSheetEdit').forSpreadsheet(Config.require(Config.KEYS.SHEET_ID)).onEdit().create();
   Logger.log('Triggers installed.');

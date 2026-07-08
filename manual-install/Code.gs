@@ -141,6 +141,45 @@ const Config = {
   // 'week' keeps links fresh (and stays within the free-tier call budget).
   jsearchDatePosted() {
     return 'week';
+  },
+
+  // --- Ingest filters (set any of these from the Setup tab, or as Script Properties) ---
+
+  // Job boards to hard-exclude, comma-separated in Script Property EXCLUDED_DOMAINS
+  // (e.g. "careers24"). Matched case-insensitively against a job's source AND its
+  // resolved URL, so it also catches boards hidden behind an Adzuna redirect.
+  // Default: exclude nothing.
+  excludedDomains() {
+    const raw = this.get('EXCLUDED_DOMAINS');
+    if (raw === null || raw === '') return [];
+    return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  },
+
+  // Allowed regions for the HARD location filter, comma-separated in Script Property
+  // ALLOWED_REGIONS (e.g. "gauteng,johannesburg,cape town"). A job is kept only if it
+  // is remote (see allowRemote) OR its location text matches one of these.
+  // Default: EMPTY = no location restriction (keep everywhere).
+  allowedRegions() {
+    const raw = this.get('ALLOWED_REGIONS');
+    if (raw === null || raw === '') return [];
+    return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  },
+
+  // Keep remote jobs from anywhere. Script Property ALLOW_REMOTE ("false" to disable).
+  // Default: true.
+  allowRemote() {
+    const raw = this.get('ALLOW_REMOTE');
+    if (raw === null || raw === '') return true;
+    return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
+  },
+
+  // Whether to tailor a CV + cover for portal-only roles (no contact email).
+  // Script Property TAILOR_FOR_PORTALS ("false" = tailor email applications only).
+  // Default: true (tailor for portals too).
+  tailorForPortals() {
+    const raw = this.get('TAILOR_FOR_PORTALS');
+    if (raw === null || raw === '') return true;
+    return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
   }
 };
 
@@ -481,15 +520,29 @@ const Sources = {
     Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) { if (o.id) seen[o.id] = true; });
 
     const deadline = t0 + 5 * 60 * 1000;   // stop before Apps Script's 6-min hard kill
-    let added = 0, dead = 0, stopped = false;
+    let added = 0, dead = 0, excluded = 0, offloc = 0, stopped = false;
     for (let i = 0; i < found.length && added < cap; i++) {
       if (Date.now() > deadline) { stopped = true; break; }
       const job = found[i];
       if (!job.id || seen[job.id]) continue;
       seen[job.id] = true;   // also dedups within this run
-      // Only Adzuna hands out redirect links that go stale; JSearch and ATS
-      // return direct links, so skip the (slow) liveness check for those.
-      if (/^adzuna/.test(job.source) && !self.linkAlive_(job.url)) { dead++; continue; }
+
+      // Adzuna hands out redirect links: resolve to the real employer URL (durable,
+      // and exposes the true domain so the exclusion below can see it), and drop
+      // any that resolve to a dead page. JSearch/ATS already return direct links.
+      if (/^adzuna/.test(job.source)) {
+        const r = self.resolveUrl_(job.url);
+        job.url = r.url;
+        if (!r.alive) { dead++; continue; }
+      }
+
+      // Best-effort application email from the posting text - turns a job into an
+      // "email application" (tailored CV + Gmail draft) rather than a portal role.
+      if (!job.contact_email && job.descr) job.contact_email = Outreach.harvestEmail_(job.descr);
+
+      if (self.isExcluded_(job)) { excluded++; continue; }
+      if (!self.locationOk_(job)) { offloc++; continue; }
+
       Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
         id: job.id, source: job.source, company: job.company, role: job.role,
         location: job.location, mode: job.mode, url: job.url, contact_email: job.contact_email || '',
@@ -498,9 +551,74 @@ const Sources = {
       });
       added++;
     }
-    if (dead) Logger.log('ingest: skipped ' + dead + ' Adzuna job(s) with dead links.');
+    const skips = [];
+    if (dead) skips.push(dead + ' dead-link');
+    if (excluded) skips.push(excluded + ' excluded-board');
+    if (offloc) skips.push(offloc + ' out-of-location');
+    if (skips.length) Logger.log('ingest: skipped ' + skips.join(', ') + '.');
     if (stopped) Logger.log('ingest: stopped at time budget; next run continues with what is still fresh.');
     return added;
+  },
+
+  /**
+   * Resolve a redirect URL (e.g. Adzuna's) to the final employer URL by following
+   * Location headers manually, so we can store the direct link and see the true
+   * domain. Returns { url, alive }. Fails open (alive:true) on transient errors.
+   */
+  resolveUrl_(url, maxHops) {
+    if (!url) return { url: url, alive: false };
+    maxHops = maxHops || 4;
+    let cur = url;
+    try {
+      for (let h = 0; h < maxHops; h++) {
+        const res = UrlFetchApp.fetch(cur, {
+          followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: false
+        });
+        const code = res.getResponseCode();
+        if (code >= 300 && code < 400) {
+          const hdr = res.getAllHeaders();
+          let loc = hdr['Location'] || hdr['location'];
+          if (Array.isArray(loc)) loc = loc[0];
+          if (!loc) return { url: cur, alive: true };
+          if (!/^https?:\/\//i.test(loc)) {
+            const base = cur.match(/^(https?:\/\/[^\/]+)/);
+            loc = (base ? base[1] : '') + (loc.charAt(0) === '/' ? loc : '/' + loc);
+          }
+          cur = loc;
+          continue;
+        }
+        if (code >= 400) return { url: cur, alive: false };
+        return { url: cur, alive: true };            // 2xx - resolved
+      }
+      return { url: cur, alive: true };              // too many hops; treat as alive
+    } catch (e) {
+      Logger.log('resolveUrl_ (' + url + '): ' + e);
+      return { url: cur, alive: true };              // fail open on transient blip
+    }
+  },
+
+  // True if a job's board is on the exclusion list (checks source + resolved URL).
+  isExcluded_(job) {
+    const bl = Config.excludedDomains();
+    if (!bl.length) return false;
+    const hay = (String(job.source) + ' ' + String(job.url)).toLowerCase();
+    for (let i = 0; i < bl.length; i++) if (hay.indexOf(bl[i]) !== -1) return true;
+    return false;
+  },
+
+  isRemote_(job) {
+    if (String(job.mode || '').toLowerCase() === 'remote') return true;
+    return /\bremote\b|work from home|wfh/.test(String(job.location || '').toLowerCase());
+  },
+
+  // Hard location gate: keep only remote (if allowed) or allowed-region matches.
+  locationOk_(job) {
+    const regions = Config.allowedRegions();
+    if (!regions.length) return true;                          // no restriction configured
+    if (Config.allowRemote() && this.isRemote_(job)) return true;
+    const loc = String(job.location || '').toLowerCase();
+    for (let i = 0; i < regions.length; i++) if (loc.indexOf(regions[i]) !== -1) return true;
+    return false;
   },
 
   /**
@@ -553,7 +671,7 @@ const Sources = {
           '&results_per_page=25' +
           '&what=' + encodeURIComponent(what) +
           '&sort_by=date' +          // newest first, so redirects are less likely expired
-          '&max_days_old=21' +       // drop stale postings that 404 on click
+          '&max_days_old=10' +       // tighter window - stale postings 404 on click
           '&content-type=application/json';
         const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
         if (res.getResponseCode() !== 200) { Logger.log('Adzuna ' + country + '/' + what + ' HTTP ' + res.getResponseCode()); return; }
@@ -568,7 +686,7 @@ const Sources = {
             source: 'adzuna:' + country, company: company, role: role,
             location: (r.location && r.location.display_name) || '',
             mode: /remote|work from home|wfh/.test(hay) ? 'remote' : '',
-            url: jurl, posted_date: r.created || ''
+            url: jurl, posted_date: r.created || '', descr: r.description || ''
           });
         });
       });
@@ -616,7 +734,8 @@ const Sources = {
           source: 'jsearch:' + publisher, company: company, role: role,
           location: loc,
           mode: j.job_is_remote ? 'remote' : '',
-          url: jurl, posted_date: j.job_posted_at_datetime_utc || ''
+          url: jurl, posted_date: j.job_posted_at_datetime_utc || '',
+          descr: j.job_description || ''
         });
       });
     });
@@ -1098,6 +1217,18 @@ function prepApprovedBatch() {
     if (!opp) continue;
     if (['drafted', 'submitted', 'sent'].indexOf(opp.status) !== -1) continue;
 
+    // Portal-only roles (no contact email): tailor a CV + cover only if the
+    // TAILOR_FOR_PORTALS setting is on. Otherwise flag for manual application.
+    if (!opp.contact_email && !Config.tailorForPortals()) {
+      Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
+        status: 'drafted',
+        notes: 'Portal role - apply manually via the job link (tailored docs skipped by setting).',
+        updated_at: new Date()
+      });
+      done++;
+      continue;
+    }
+
     try {
       const cv = Tailor.tailorCv(opp);
       const cover = Tailor.coverLetter(opp);
@@ -1212,6 +1343,7 @@ function installTriggers() {
   ScriptApp.newTrigger('followUps').timeBased().everyDays(1).atHour(8).create();
   ScriptApp.newTrigger('prepInterviews').timeBased().everyDays(1).atHour(9).create();
   ScriptApp.newTrigger('weeklyReport').timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(7).create();
+  ScriptApp.newTrigger('pruneDeadLinks').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(5).create();
   // Auto-stamp applied_date when you pick sent/submitted in the status dropdown.
   ScriptApp.newTrigger('onSheetEdit').forSpreadsheet(Config.require(Config.KEYS.SHEET_ID)).onEdit().create();
   Logger.log('Triggers installed.');
@@ -1392,6 +1524,11 @@ const SETUP_FIELDS = [
   { type: 'prop',   label: 'Adzuna App Key',                       target: 'ADZUNA_APP_KEY', secret: true },
   { type: 'prop',   label: 'RapidAPI key (optional, for JSearch)', target: 'RAPIDAPI_KEY', secret: true },
   { type: 'prop',   label: 'Master CV Google Doc ID (the Doc that contains a {{SUMMARY}} token)', target: 'MASTER_CV_DOC_ID' },
+  { type: 'section', label: 'SEARCH FILTERS  -  optional; leave blank to keep the defaults in brackets' },
+  { type: 'prop',   label: 'Restrict to regions, comma-separated (blank = anywhere)',                 target: 'ALLOWED_REGIONS' },
+  { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: 'ALLOW_REMOTE' },
+  { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: 'EXCLUDED_DOMAINS' },
+  { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: 'TAILOR_FOR_PORTALS' },
   { type: 'section', label: 'SAVE' },
   { type: 'save',   label: 'Tick this box to save   (or run applySetup from the Run menu)' },
   { type: 'status', label: 'Status' }
@@ -1737,13 +1874,14 @@ function diagnose() {
  */
 function pruneDeadLinks() {
   Crm.ensureSchema();
-  const MAX_CHECKS = 150;
+  const MAX_CHECKS = 80;                          // lower cap: slow redirect-follows add up
+  const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
   let budget = MAX_CHECKS;
   let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;
 
   Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) {
     if (!o.url || o.status === 'dead_link') return;
-    if (budget <= 0) { capped = true; return; }
+    if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
     budget--; oppChecked++;
     if (!Sources.linkAlive_(o.url)) {
       Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
@@ -1757,7 +1895,7 @@ function pruneDeadLinks() {
 
   Crm.readAll(Crm.TABS.APPROVALS).forEach(function (a) {
     if (!a.url || String(a.decision || '').trim()) return;   // leave already-decided rows alone
-    if (budget <= 0) { capped = true; return; }
+    if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
     budget--; apprChecked++;
     if (!Sources.linkAlive_(a.url)) {
       Crm.updateRow(Crm.TABS.APPROVALS, a._row, {
@@ -1770,7 +1908,7 @@ function pruneDeadLinks() {
 
   const report = 'pruneDeadLinks: Opportunities ' + oppDead + '/' + oppChecked + ' dead; ' +
     'Approvals ' + apprDead + '/' + apprChecked + ' dead.' +
-    (capped ? ' CAPPED at ' + MAX_CHECKS + ' checks - re-run to continue.' : ' Done.');
+    (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
   Logger.log(report);
   return report;
 }

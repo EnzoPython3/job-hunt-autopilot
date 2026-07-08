@@ -90,13 +90,14 @@ function diagnose() {
  */
 function pruneDeadLinks() {
   Crm.ensureSchema();
-  const MAX_CHECKS = 150;
+  const MAX_CHECKS = 80;                          // lower cap: slow redirect-follows add up
+  const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
   let budget = MAX_CHECKS;
   let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;
 
   Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) {
     if (!o.url || o.status === 'dead_link') return;
-    if (budget <= 0) { capped = true; return; }
+    if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
     budget--; oppChecked++;
     if (!Sources.linkAlive_(o.url)) {
       Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
@@ -110,7 +111,7 @@ function pruneDeadLinks() {
 
   Crm.readAll(Crm.TABS.APPROVALS).forEach(function (a) {
     if (!a.url || String(a.decision || '').trim()) return;   // leave already-decided rows alone
-    if (budget <= 0) { capped = true; return; }
+    if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
     budget--; apprChecked++;
     if (!Sources.linkAlive_(a.url)) {
       Crm.updateRow(Crm.TABS.APPROVALS, a._row, {
@@ -123,7 +124,7 @@ function pruneDeadLinks() {
 
   const report = 'pruneDeadLinks: Opportunities ' + oppDead + '/' + oppChecked + ' dead; ' +
     'Approvals ' + apprDead + '/' + apprChecked + ' dead.' +
-    (capped ? ' CAPPED at ' + MAX_CHECKS + ' checks - re-run to continue.' : ' Done.');
+    (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
   Logger.log(report);
   return report;
 }

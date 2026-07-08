@@ -35,6 +35,11 @@ const SETUP_FIELDS = [
   { type: 'prop',   label: 'Adzuna App Key',                       target: 'ADZUNA_APP_KEY', secret: true },
   { type: 'prop',   label: 'RapidAPI key (optional, for JSearch)', target: 'RAPIDAPI_KEY', secret: true },
   { type: 'prop',   label: 'Master CV Google Doc ID (the Doc that contains a {{SUMMARY}} token)', target: 'MASTER_CV_DOC_ID' },
+  { type: 'section', label: 'SEARCH FILTERS  -  optional; leave blank to keep the defaults in brackets' },
+  { type: 'prop',   label: 'Restrict to regions, comma-separated (blank = anywhere)',                 target: 'ALLOWED_REGIONS' },
+  { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: 'ALLOW_REMOTE' },
+  { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: 'EXCLUDED_DOMAINS' },
+  { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: 'TAILOR_FOR_PORTALS' },
   { type: 'section', label: 'SAVE' },
   { type: 'save',   label: 'Tick this box to save   (or run applySetup from the Run menu)' },
   { type: 'status', label: 'Status' }

@@ -130,5 +130,44 @@ const Config = {
   // 'week' keeps links fresh (and stays within the free-tier call budget).
   jsearchDatePosted() {
     return 'week';
+  },
+
+  // --- Ingest filters (set any of these from the Setup tab, or as Script Properties) ---
+
+  // Job boards to hard-exclude, comma-separated in Script Property EXCLUDED_DOMAINS
+  // (e.g. "careers24"). Matched case-insensitively against a job's source AND its
+  // resolved URL, so it also catches boards hidden behind an Adzuna redirect.
+  // Default: exclude nothing.
+  excludedDomains() {
+    const raw = this.get('EXCLUDED_DOMAINS');
+    if (raw === null || raw === '') return [];
+    return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  },
+
+  // Allowed regions for the HARD location filter, comma-separated in Script Property
+  // ALLOWED_REGIONS (e.g. "gauteng,johannesburg,cape town"). A job is kept only if it
+  // is remote (see allowRemote) OR its location text matches one of these.
+  // Default: EMPTY = no location restriction (keep everywhere).
+  allowedRegions() {
+    const raw = this.get('ALLOWED_REGIONS');
+    if (raw === null || raw === '') return [];
+    return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  },
+
+  // Keep remote jobs from anywhere. Script Property ALLOW_REMOTE ("false" to disable).
+  // Default: true.
+  allowRemote() {
+    const raw = this.get('ALLOW_REMOTE');
+    if (raw === null || raw === '') return true;
+    return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
+  },
+
+  // Whether to tailor a CV + cover for portal-only roles (no contact email).
+  // Script Property TAILOR_FOR_PORTALS ("false" = tailor email applications only).
+  // Default: true (tailor for portals too).
+  tailorForPortals() {
+    const raw = this.get('TAILOR_FOR_PORTALS');
+    if (raw === null || raw === '') return true;
+    return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
   }
 };

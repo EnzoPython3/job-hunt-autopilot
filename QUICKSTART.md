@@ -70,10 +70,19 @@ In the spreadsheet you just opened, go to the **Setup** tab (first tab).
    cells are pre-filled with a South-African example - just type over them.)
 2. Paste your keys from Part 1 into the **API KEYS** rows (Gemini, Adzuna App ID, Adzuna App
    Key, and RapidAPI if you got one).
-3. When you're done, **tick the "Save" checkbox** at the bottom.
+3. (Optional) Under **SEARCH FILTERS**, narrow things down:
+   - **Restrict to regions** - e.g. `Gauteng` (or `Gauteng, Cape Town`) to keep only jobs in
+     those areas. Blank = anywhere.
+   - **Allow remote from anywhere** - `true` keeps remote jobs worldwide even when you've
+     restricted regions; `false` to drop them.
+   - **Exclude job boards** - e.g. `careers24` to never see jobs from a board you dislike.
+   - **Tailor for portal roles** - `true` (default) writes a custom CV + cover for every
+     approved job; `false` does that only for jobs that have an email to apply to (portal
+     jobs then just get a link to apply by hand - saves AI quota).
+4. When you're done, **tick the "Save" checkbox** at the bottom.
    - If nothing happens (the Save box only works after Part 6), instead go back to the script
      tab, choose **`applySetup`** in the function dropdown, and click **Run**.
-4. The **Status** row shows "Saved ...". Your keys are now stored securely and the key cells
+5. The **Status** row shows "Saved ...". Your keys are now stored securely and the key cells
    are cleared on purpose.
 
 You can come back and change any answer any time - fill it in and Save again.

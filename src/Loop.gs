@@ -34,6 +34,18 @@ function prepApprovedBatch() {
     if (!opp) continue;
     if (['drafted', 'submitted', 'sent'].indexOf(opp.status) !== -1) continue;
 
+    // Portal-only roles (no contact email): tailor a CV + cover only if the
+    // TAILOR_FOR_PORTALS setting is on. Otherwise flag for manual application.
+    if (!opp.contact_email && !Config.tailorForPortals()) {
+      Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
+        status: 'drafted',
+        notes: 'Portal role - apply manually via the job link (tailored docs skipped by setting).',
+        updated_at: new Date()
+      });
+      done++;
+      continue;
+    }
+
     try {
       const cv = Tailor.tailorCv(opp);
       const cover = Tailor.coverLetter(opp);

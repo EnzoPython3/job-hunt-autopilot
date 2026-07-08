@@ -32,6 +32,14 @@ Goal: help book **2-5 interviews/week**.
   ATS feeds. They only fire if you add specific company board slugs in `Config.gs`.
 - **Gemini** does the fit-scoring and the CV/cover tailoring (it is not a job source).
 
+## Filters you control (Setup tab / Script Properties)
+- **Location** - `ALLOWED_REGIONS` keeps only jobs in those areas; `ALLOW_REMOTE` keeps
+  remote roles from anywhere. Applied at ingest, so off-location jobs never enter the sheet.
+- **Excluded boards** - `EXCLUDED_DOMAINS` (e.g. `careers24`) hard-drops jobs from boards you
+  don't want, even ones hidden behind an Adzuna redirect.
+- **Portal tailoring** - `TAILOR_FOR_PORTALS` (default on) writes a tailored CV + cover for
+  every approved job; set it off to tailor only email applications and apply to portals by hand.
+
 ## Guardrails (by design)
 - **Assisted only** - no per-item auto-submit, no auto-send. Everything is a draft.
 - **No fabrication** - prompts forbid inventing metrics/employers/dates; salary is never printed.

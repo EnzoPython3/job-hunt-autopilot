@@ -27,6 +27,13 @@ Run `draftAgencyOutreach` (or let it run on a light schedule). It creates one Gm
 - `DAILY_SOURCE_CAP`, `CHUNK_SIZE`, `AGENCY_DRAFTS_PER_RUN`: throughput knobs.
 - Widen reach in `Config.gs`: add Adzuna countries/queries, add `jsearchQueries()` terms, add ATS boards. Loosen JSearch freshness with `jsearchDatePosted()` (`week` -> `month`) for more volume.
 
+## Ingest filters (Setup tab, or Script Properties)
+Applied at ingest, before a job is even stored, so they save Gemini scoring quota:
+- `ALLOWED_REGIONS` (comma-separated, blank = anywhere): keep a job only if it is remote or its location matches one of these (e.g. `gauteng,johannesburg`).
+- `ALLOW_REMOTE` (`true`/`false`, default `true`): keep remote jobs from anywhere, even when regions are restricted.
+- `EXCLUDED_DOMAINS` (comma-separated, e.g. `careers24`): hard-drop jobs from these boards. Matched against source and the resolved URL (so Adzuna redirects are caught too).
+- `TAILOR_FOR_PORTALS` (`true`/`false`, default `true`): `false` tailors a CV + cover only for jobs with a contact email; portal roles then just get a link to apply by hand.
+
 ## If interviews are below target
 1. Lower `SCORE_THRESHOLD` and widen `adzunaQueries()`/geos.
 2. Add more `atsBoards()` (target SA BPO employers directly).
@@ -34,7 +41,7 @@ Run `draftAgencyOutreach` (or let it run on a light schedule). It creates one Gm
 4. Check the weekly report's funnel to see where drop-off happens (queued -> sent -> response -> interview).
 
 ## Maintenance
-- `pruneDeadLinks` - follow every stored job link and retire the dead ones (Opportunities -> `dead_link`, Approvals -> `Skip - dead link`). Run it once to clear an old backlog of expired links, then re-run if it reports it was capped. New jobs are already link-checked on ingest, so this is only for cleanup.
+- `pruneDeadLinks` - follow every stored job link and retire the dead ones (Opportunities -> `dead_link`, Approvals -> `Skip - dead link`). It now runs automatically every Sunday 05:00 and is time-boxed (stops at ~4.5 min / 80 checks) so it can't hit the 6-minute limit - if it reports it was CAPPED, just run it again to continue. Adzuna links are resolved to their final URL at ingest, so far fewer die in the first place.
 - `diagnose` - prints which Script Properties are set and live-tests JSearch + Adzuna + Gemini + the sheet. Run it if a source stops returning jobs.
 - After any change to the project's OAuth scopes (e.g. the manifest), open the editor, run `diagnose` once and **re-grant permissions**, then re-run `installTriggers`. If the morning digest ever stops arriving, this is the first thing to check - the log will show `morningDigest: SEND FAILED` on a missing `script.send_mail` grant.
 

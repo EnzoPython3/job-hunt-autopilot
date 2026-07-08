@@ -26,15 +26,29 @@ const Sources = {
     Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) { if (o.id) seen[o.id] = true; });
 
     const deadline = t0 + 5 * 60 * 1000;   // stop before Apps Script's 6-min hard kill
-    let added = 0, dead = 0, stopped = false;
+    let added = 0, dead = 0, excluded = 0, offloc = 0, stopped = false;
     for (let i = 0; i < found.length && added < cap; i++) {
       if (Date.now() > deadline) { stopped = true; break; }
       const job = found[i];
       if (!job.id || seen[job.id]) continue;
       seen[job.id] = true;   // also dedups within this run
-      // Only Adzuna hands out redirect links that go stale; JSearch and ATS
-      // return direct links, so skip the (slow) liveness check for those.
-      if (/^adzuna/.test(job.source) && !self.linkAlive_(job.url)) { dead++; continue; }
+
+      // Adzuna hands out redirect links: resolve to the real employer URL (durable,
+      // and exposes the true domain so the exclusion below can see it), and drop
+      // any that resolve to a dead page. JSearch/ATS already return direct links.
+      if (/^adzuna/.test(job.source)) {
+        const r = self.resolveUrl_(job.url);
+        job.url = r.url;
+        if (!r.alive) { dead++; continue; }
+      }
+
+      // Best-effort application email from the posting text - turns a job into an
+      // "email application" (tailored CV + Gmail draft) rather than a portal role.
+      if (!job.contact_email && job.descr) job.contact_email = Outreach.harvestEmail_(job.descr);
+
+      if (self.isExcluded_(job)) { excluded++; continue; }
+      if (!self.locationOk_(job)) { offloc++; continue; }
+
       Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
         id: job.id, source: job.source, company: job.company, role: job.role,
         location: job.location, mode: job.mode, url: job.url, contact_email: job.contact_email || '',
@@ -43,9 +57,74 @@ const Sources = {
       });
       added++;
     }
-    if (dead) Logger.log('ingest: skipped ' + dead + ' Adzuna job(s) with dead links.');
+    const skips = [];
+    if (dead) skips.push(dead + ' dead-link');
+    if (excluded) skips.push(excluded + ' excluded-board');
+    if (offloc) skips.push(offloc + ' out-of-location');
+    if (skips.length) Logger.log('ingest: skipped ' + skips.join(', ') + '.');
     if (stopped) Logger.log('ingest: stopped at time budget; next run continues with what is still fresh.');
     return added;
+  },
+
+  /**
+   * Resolve a redirect URL (e.g. Adzuna's) to the final employer URL by following
+   * Location headers manually, so we can store the direct link and see the true
+   * domain. Returns { url, alive }. Fails open (alive:true) on transient errors.
+   */
+  resolveUrl_(url, maxHops) {
+    if (!url) return { url: url, alive: false };
+    maxHops = maxHops || 4;
+    let cur = url;
+    try {
+      for (let h = 0; h < maxHops; h++) {
+        const res = UrlFetchApp.fetch(cur, {
+          followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: false
+        });
+        const code = res.getResponseCode();
+        if (code >= 300 && code < 400) {
+          const hdr = res.getAllHeaders();
+          let loc = hdr['Location'] || hdr['location'];
+          if (Array.isArray(loc)) loc = loc[0];
+          if (!loc) return { url: cur, alive: true };
+          if (!/^https?:\/\//i.test(loc)) {
+            const base = cur.match(/^(https?:\/\/[^\/]+)/);
+            loc = (base ? base[1] : '') + (loc.charAt(0) === '/' ? loc : '/' + loc);
+          }
+          cur = loc;
+          continue;
+        }
+        if (code >= 400) return { url: cur, alive: false };
+        return { url: cur, alive: true };            // 2xx - resolved
+      }
+      return { url: cur, alive: true };              // too many hops; treat as alive
+    } catch (e) {
+      Logger.log('resolveUrl_ (' + url + '): ' + e);
+      return { url: cur, alive: true };              // fail open on transient blip
+    }
+  },
+
+  // True if a job's board is on the exclusion list (checks source + resolved URL).
+  isExcluded_(job) {
+    const bl = Config.excludedDomains();
+    if (!bl.length) return false;
+    const hay = (String(job.source) + ' ' + String(job.url)).toLowerCase();
+    for (let i = 0; i < bl.length; i++) if (hay.indexOf(bl[i]) !== -1) return true;
+    return false;
+  },
+
+  isRemote_(job) {
+    if (String(job.mode || '').toLowerCase() === 'remote') return true;
+    return /\bremote\b|work from home|wfh/.test(String(job.location || '').toLowerCase());
+  },
+
+  // Hard location gate: keep only remote (if allowed) or allowed-region matches.
+  locationOk_(job) {
+    const regions = Config.allowedRegions();
+    if (!regions.length) return true;                          // no restriction configured
+    if (Config.allowRemote() && this.isRemote_(job)) return true;
+    const loc = String(job.location || '').toLowerCase();
+    for (let i = 0; i < regions.length; i++) if (loc.indexOf(regions[i]) !== -1) return true;
+    return false;
   },
 
   /**
@@ -98,7 +177,7 @@ const Sources = {
           '&results_per_page=25' +
           '&what=' + encodeURIComponent(what) +
           '&sort_by=date' +          // newest first, so redirects are less likely expired
-          '&max_days_old=21' +       // drop stale postings that 404 on click
+          '&max_days_old=10' +       // tighter window - stale postings 404 on click
           '&content-type=application/json';
         const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
         if (res.getResponseCode() !== 200) { Logger.log('Adzuna ' + country + '/' + what + ' HTTP ' + res.getResponseCode()); return; }
@@ -113,7 +192,7 @@ const Sources = {
             source: 'adzuna:' + country, company: company, role: role,
             location: (r.location && r.location.display_name) || '',
             mode: /remote|work from home|wfh/.test(hay) ? 'remote' : '',
-            url: jurl, posted_date: r.created || ''
+            url: jurl, posted_date: r.created || '', descr: r.description || ''
           });
         });
       });
@@ -161,7 +240,8 @@ const Sources = {
           source: 'jsearch:' + publisher, company: company, role: role,
           location: loc,
           mode: j.job_is_remote ? 'remote' : '',
-          url: jurl, posted_date: j.job_posted_at_datetime_utc || ''
+          url: jurl, posted_date: j.job_posted_at_datetime_utc || '',
+          descr: j.job_description || ''
         });
       });
     });

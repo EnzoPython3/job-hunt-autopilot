@@ -144,10 +144,11 @@ const Config = {
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
 
-  // Allowed regions for the HARD location filter, comma-separated in Script Property
-  // ALLOWED_REGIONS (e.g. "gauteng,johannesburg,cape town"). A job is kept only if it
-  // is remote (see allowRemote) OR its location text matches one of these.
-  // Default: EMPTY = no location restriction (keep everywhere).
+  // Allowed regions for the location filter, comma-separated in Script Property
+  // ALLOWED_REGIONS (e.g. "gauteng,johannesburg,cape town"). A job is kept if it is
+  // remote (see allowRemote), its location matches one of these, OR its location
+  // can't be read (blank - benefit of the doubt); only jobs confidently located
+  // elsewhere are dropped. Default: EMPTY = no location restriction.
   allowedRegions() {
     const raw = this.get('ALLOWED_REGIONS');
     if (raw === null || raw === '') return [];

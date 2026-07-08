@@ -117,14 +117,17 @@ const Sources = {
     return /\bremote\b|work from home|wfh/.test(String(job.location || '').toLowerCase());
   },
 
-  // Hard location gate: keep only remote (if allowed) or allowed-region matches.
+  // Location gate: keep remote (if allowed), allowed-region matches, and jobs
+  // whose location we cannot confidently read (blank). Only jobs confidently
+  // located outside the allowed regions are dropped.
   locationOk_(job) {
     const regions = Config.allowedRegions();
     if (!regions.length) return true;                          // no restriction configured
     if (Config.allowRemote() && this.isRemote_(job)) return true;
-    const loc = String(job.location || '').toLowerCase();
+    const loc = String(job.location || '').trim().toLowerCase();
+    if (!loc) return true;                                     // can't confidently place -> include
     for (let i = 0; i < regions.length; i++) if (loc.indexOf(regions[i]) !== -1) return true;
-    return false;
+    return false;                                              // confidently outside allowed regions
   },
 
   /**

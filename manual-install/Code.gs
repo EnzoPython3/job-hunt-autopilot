@@ -50,6 +50,10 @@ const Config = {
     return v;
   },
 
+  remove(key) {
+    this.props_().deleteProperty(key);
+  },
+
   // --- Safe defaults; override any of these via the "Config" sheet tab ---
   defaults: {
     GEMINI_MODEL: 'gemini-2.5-flash',
@@ -106,6 +110,14 @@ const Config = {
         'client support', 'administrative assistant', 'office administrator', 'data capture'],
       summary: 'One or two sentences describing who you are, your experience and the role you want. This feeds the fit-scoring and the tailored CV summary, so make it specific and factual.'
     };
+  },
+
+  // Candidate profile for LLM prompts: internal-only fields stripped. Use this at
+  // every prompt call site - salaryTargetNet must never enter a model's context.
+  promptCandidate() {
+    const c = this.candidate();
+    delete c.salaryTargetNet;
+    return c;
   },
 
   /**
@@ -168,6 +180,16 @@ const Config = {
     const raw = this.get('ALLOWED_REGIONS');
     if (raw === null || raw === '') return [];
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  },
+
+  // Vague location tags. When an allow-list is set, a location that is NOTHING BUT
+  // one of these (a bare "Gauteng" or "South Africa") is still kept, so
+  // loosely-tagged roles aren't missed - but a string that also names a specific
+  // town must match allowedRegions. Override with Script Property VAGUE_LOCATION_TAGS.
+  vagueLocationTags() {
+    const raw = this.get('VAGUE_LOCATION_TAGS');
+    const src = (raw !== null && raw !== '') ? raw : 'gauteng,south africa,za';
+    return String(src).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
 
   // Regions to hard-exclude even if otherwise in range, comma-separated in Script
@@ -541,21 +563,28 @@ const Sources = {
       if (!job.id || seen[job.id]) continue;
       seen[job.id] = true;   // also dedups within this run
 
+      // Cheap string filters first - no network spent on jobs dropped anyway.
+      if (!self.locationOk_(job)) { offloc++; continue; }
+
       // Adzuna hands out redirect links: resolve to the real employer URL (durable,
-      // and exposes the true domain so the exclusion below can see it), and drop
-      // any that resolve to a dead page. JSearch/ATS already return direct links.
+      // and exposes the true domain so the exclusion below can see it), drop dead
+      // ones, and RE-KEY dedup on the resolved URL - Adzuna re-issues the same
+      // posting under rotating redirect wrappers, so hashing the wrapper duplicated
+      // rows. JSearch/ATS already return direct links.
       if (/^adzuna/.test(job.source)) {
         const r = self.resolveUrl_(job.url);
-        job.url = r.url;
         if (!r.alive) { dead++; continue; }
+        job.url = r.url;
+        job.id = self.hashId_(job.source, job.company, job.role, job.url);
+        if (seen[job.id]) continue;
+        seen[job.id] = true;
       }
+
+      if (self.isExcluded_(job)) { excluded++; continue; }
 
       // Best-effort application email from the posting text - turns a job into an
       // "email application" (tailored CV + Gmail draft) rather than a portal role.
       if (!job.contact_email && job.descr) job.contact_email = Outreach.harvestEmail_(job.descr);
-
-      if (self.isExcluded_(job)) { excluded++; continue; }
-      if (!self.locationOk_(job)) { offloc++; continue; }
 
       Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
         id: job.id, source: job.source, company: job.company, role: job.role,
@@ -574,15 +603,23 @@ const Sources = {
     return added;
   },
 
+  // Phrases boards print on a closed posting (many answer HTTP 200 for these).
+  EXPIRED_RE: /no longer available|job (has )?expired|position (has )?been filled|this job is no longer/i,
+
   /**
    * Resolve a redirect URL (e.g. Adzuna's) to the final employer URL by following
-   * Location headers manually, so we can store the direct link and see the true
-   * domain. Returns { url, alive }. Fails open (alive:true) on transient errors.
+   * Location headers AND meta-refresh redirects manually, so we can store the
+   * direct link and see the true domain (the whatjobs/careers24 exclusion needs
+   * it). Returns { url, alive }. The final page's body is checked for
+   * expired-posting phrases - a closed role served with HTTP 200 counts as dead.
+   * Fails open only after at least one hop resolved; an error on the very first
+   * request marks the link dead (the job simply re-ingests on a later run).
    */
   resolveUrl_(url, maxHops) {
     if (!url) return { url: url, alive: false };
     maxHops = maxHops || 4;
     let cur = url;
+    let hops = 0;
     try {
       for (let h = 0; h < maxHops; h++) {
         const res = UrlFetchApp.fetch(cur, {
@@ -594,21 +631,39 @@ const Sources = {
           let loc = hdr['Location'] || hdr['location'];
           if (Array.isArray(loc)) loc = loc[0];
           if (!loc) return { url: cur, alive: true };
-          if (!/^https?:\/\//i.test(loc)) {
-            const base = cur.match(/^(https?:\/\/[^\/]+)/);
-            loc = (base ? base[1] : '') + (loc.charAt(0) === '/' ? loc : '/' + loc);
-          }
-          cur = loc;
+          cur = this.absoluteUrl_(cur, loc);
+          hops++;
           continue;
         }
         if (code >= 400) return { url: cur, alive: false };
-        return { url: cur, alive: true };            // 2xx - resolved
+        // 2xx - final page (or a meta-refresh interstitial).
+        const body = res.getContentText().slice(0, 4000);
+        if (this.EXPIRED_RE.test(body)) return { url: cur, alive: false };
+        const meta = body.match(/http-equiv=["']?refresh["']?[^>]*url\s*=\s*["']?([^"'>\s]+)/i);
+        if (meta && meta[1] && h < maxHops - 1) {
+          cur = this.absoluteUrl_(cur, meta[1]);
+          hops++;
+          continue;
+        }
+        return { url: cur, alive: true };
       }
       return { url: cur, alive: true };              // too many hops; treat as alive
     } catch (e) {
       Logger.log('resolveUrl_ (' + url + '): ' + e);
-      return { url: cur, alive: true };              // fail open on transient blip
+      return { url: cur, alive: hops > 0 };          // hop-0 failure = source link unreachable
     }
+  },
+
+  // Make a redirect target absolute against the current URL.
+  absoluteUrl_(cur, loc) {
+    loc = String(loc).trim();
+    if (/^https?:\/\//i.test(loc)) return loc;
+    const m = cur.match(/^(https?):\/\/([^\/]+)/);
+    if (!m) return loc;
+    if (loc.indexOf('//') === 0) return m[1] + ':' + loc;          // protocol-relative
+    if (loc.charAt(0) === '/') return m[1] + '://' + m[2] + loc;   // root-relative
+    const base = cur.replace(/[?#].*$/, '');                       // path-relative
+    return base.indexOf('/', 8) === -1 ? (base + '/' + loc) : base.replace(/\/[^\/]*$/, '/') + loc;
   },
 
   // True if a job's board is on the exclusion list (checks source + resolved URL).
@@ -627,20 +682,28 @@ const Sources = {
 
   // Location gate. Remote (globally) is always kept. Excluded areas are dropped even
   // if otherwise in range. A job with no readable location is kept (don't miss vague
-  // opps). Otherwise, when an allow-list is set, keep only locations that match it.
+  // opps). When an allow-list is set, a location must match it to be kept - EXCEPT
+  // that a location which is nothing but a vague tag (a bare "Gauteng" or
+  // "South Africa") also passes. A string naming a specific town outside the range
+  // ("Mamelodi, Gauteng") does NOT ride the tag - the town itself must be allowed.
   locationOk_(job) {
     if (Config.allowRemote() && this.isRemote_(job)) return true;   // remote anywhere
 
     const loc = String(job.location || '').trim().toLowerCase();
+    if (!loc) return true;                                     // no readable location -> keep (don't miss)
 
     const blocked = Config.excludedRegions();
-    if (loc) for (let i = 0; i < blocked.length; i++) if (loc.indexOf(blocked[i]) !== -1) return false;
+    for (let i = 0; i < blocked.length; i++) if (loc.indexOf(blocked[i]) !== -1) return false;
 
     const allowed = Config.allowedRegions();
     if (!allowed.length) return true;                          // no allow-list -> keep the rest
-    if (!loc) return true;                                     // no readable location -> keep (don't miss)
     for (let j = 0; j < allowed.length; j++) if (loc.indexOf(allowed[j]) !== -1) return true;
-    return false;                                              // located outside the range -> drop
+
+    // Bare vague tags pass; anything left after stripping them names a town
+    // outside the range -> drop.
+    let rest = loc;
+    Config.vagueLocationTags().forEach(function (t) { rest = rest.split(t).join(''); });
+    return rest.replace(/[^a-z0-9]/g, '') === '';
   },
 
   /**
@@ -657,8 +720,8 @@ const Sources = {
       });
       const code = res.getResponseCode();
       if (code >= 400) return false;
-      const body = res.getContentText().slice(0, 4000).toLowerCase();
-      if (/no longer available|job (has )?expired|position (has )?been filled|this job is no longer/.test(body)) return false;
+      const body = res.getContentText().slice(0, 4000);
+      if (this.EXPIRED_RE.test(body)) return false;
       return true;
     } catch (e) {
       Logger.log('linkAlive_ (' + url + '): ' + e);
@@ -868,7 +931,7 @@ const Match = {
 
   scoreOne(opp) {
     const prompt = Prompts.render('scoring', {
-      candidate: JSON.stringify(Config.candidate()),
+      candidate: JSON.stringify(Config.promptCandidate()),
       job: JSON.stringify({ company: opp.company, role: opp.role, location: opp.location, mode: opp.mode, url: opp.url })
     });
     return Gemini.generate(prompt, { json: true, schema: this.SCHEMA, temperature: 0.2, maxOutputTokens: 700 });
@@ -926,7 +989,7 @@ const Tailor = {
   tailorCv(opp) {
     const masterId = Config.require(Config.KEYS.MASTER_CV_DOC_ID);
     const folder = this.folderForOpp_(opp);
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
 
     const summary = Gemini.generate(Prompts.render('cv_tailor', {
       candidate: JSON.stringify(cand),
@@ -945,7 +1008,7 @@ const Tailor = {
 
   coverLetter(opp) {
     const folder = this.folderForOpp_(opp);
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
 
     const text = Gemini.generate(Prompts.render('cover_letter', {
       candidate: JSON.stringify(cand),
@@ -1127,7 +1190,7 @@ function masterCvContent_() {
  */
 const Outreach = {
   draftFor(opp, assets) {
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
     const to = opp.contact_email;
     if (!to) return null;
 
@@ -1146,7 +1209,7 @@ const Outreach = {
 
   draftAgencyOutreach(limit) {
     limit = limit || Config.tunable('AGENCY_DRAFTS_PER_RUN');
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
     const agencies = Crm.readAll(Crm.TABS.CONTACTS).filter(function (c) {
       return c.type === 'agency' && c.email && !c.last_contacted;
     });
@@ -1165,7 +1228,7 @@ const Outreach = {
 
   // Draft a follow-up email (Gmail draft) for a sent application with no response yet.
   draftFollowUp(opp, stageLabel) {
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
     if (!opp.contact_email) return null;
     const body = Gemini.generate(Prompts.render('followup', {
       stage: stageLabel,
@@ -1176,10 +1239,24 @@ const Outreach = {
     return GmailApp.createDraft(opp.contact_email, subject, body, { name: cand.name }).getId();
   },
 
-  // Best-effort extraction of an application email from posting text.
+  // Best-effort extraction of an application email from posting text. Skips
+  // system inboxes (noreply/privacy/legal), job-board domains, and image-name
+  // false positives (logo@2x.png) so a junk address never turns a portal role
+  // into an "email application". info@/recruitment@ style addresses are
+  // deliberately kept - SA SME ads genuinely use them.
   harvestEmail_(text) {
-    const m = String(text || '').match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/);
-    return m ? m[0] : '';
+    const all = String(text || '').match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g) || [];
+    const badLocal = /^(no[.\-_]?reply|do[.\-_]?not[.\-_]?reply|donotreply|mailer[.\-_]?daemon|postmaster|privacy|dataprotection|popia|legal|unsubscribe)/i;
+    const badDomain = /(adzuna|whatjobs|careers24|indeed|linkedin|glassdoor|pnet|workable|greenhouse|lever\.co|ashby)/i;
+    const badTld = /\.(png|jpe?g|gif|svg|webp)$/i;
+    for (let i = 0; i < all.length; i++) {
+      const at = all[i].lastIndexOf('@');
+      const local = all[i].slice(0, at);
+      const domain = all[i].slice(at + 1);
+      if (badLocal.test(local) || badDomain.test(domain) || badTld.test(domain)) continue;
+      return all[i];
+    }
+    return '';
   }
 };
 
@@ -1276,7 +1353,7 @@ function htmlEscape_(s) {
 const InterviewPrep = {
   generateFor(opp) {
     const folder = Tailor.folderForOpp_(opp);
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
 
     const text = Gemini.generate(Prompts.render('interview_prep', {
       candidate: JSON.stringify(cand),
@@ -1351,8 +1428,12 @@ const Report = {
 
   // Write this week's funnel to the KPIs tab; refresh the row if one already
   // exists for this week's Monday, so re-running does not create duplicates.
+  // Uses the SPREADSHEET's timezone throughout: Sheets coerces the written text
+  // to a Date stored at sheet-tz midnight, so formatting the read-back in any
+  // other zone can shift a calendar day and split the week into duplicate rows.
   writeKpiRow_(kpi) {
-    const week = Utilities.formatDate(this.mondayOf_(new Date()), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const tz = Crm.ss_().getSpreadsheetTimeZone();
+    const week = Utilities.formatDate(this.mondayOf_(new Date()), tz, 'yyyy-MM-dd');
     const row = {
       week_start: week, sourced: kpi.sourced, scored: kpi.scored, queued: kpi.queued,
       approved: kpi.approved, submitted: kpi.submitted, sent: kpi.sent,
@@ -1360,7 +1441,7 @@ const Report = {
     };
     const existing = Crm.readAll(Crm.TABS.KPIS).filter(function (r) {
       const w = (r.week_start instanceof Date)
-        ? Utilities.formatDate(r.week_start, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+        ? Utilities.formatDate(r.week_start, tz, 'yyyy-MM-dd')
         : String(r.week_start).slice(0, 10);
       return w === week;
     })[0];
@@ -1715,7 +1796,7 @@ const SETUP_FIELDS = [
   { type: 'list',   label: 'Target roles (comma-separated)',                        target: 'tracks' },
   { type: 'list',   label: 'Regions / cities you will work in (comma-separated)',   target: 'geos' },
   { type: 'list',   label: 'Skill keywords (comma-separated)',                      target: 'keywords' },
-  { type: 'salary', label: 'Salary target net per month, low and high (e.g. 15000, 20000) - private, never shown', target: 'salaryTargetNet' },
+  { type: 'salary', label: 'Salary target net per month, low and high (e.g. 15000, 20000 or R15 000 - R20 000) - private, never shown', target: 'salaryTargetNet' },
   { type: 'text',   label: 'One-line summary of you (feeds fit-scoring and your CV summary)', target: 'summary' },
   { type: 'section', label: 'API KEYS  -  paste each; on Save they move to secure storage and these cells are cleared' },
   { type: 'prop',   label: 'Gemini API key',                       target: 'GEMINI_API_KEY', secret: true },
@@ -1723,12 +1804,12 @@ const SETUP_FIELDS = [
   { type: 'prop',   label: 'Adzuna App Key',                       target: 'ADZUNA_APP_KEY', secret: true },
   { type: 'prop',   label: 'RapidAPI key (optional, for JSearch)', target: 'RAPIDAPI_KEY', secret: true },
   { type: 'prop',   label: 'Master CV Google Doc ID (the Doc that contains a {{SUMMARY}} token)', target: 'MASTER_CV_DOC_ID' },
-  { type: 'section', label: 'SEARCH FILTERS  -  optional; leave blank to keep the defaults in brackets' },
-  { type: 'prop',   label: 'Keep ONLY these regions, comma-separated (blank = anywhere)',              target: 'ALLOWED_REGIONS' },
-  { type: 'prop',   label: 'Drop these sub-areas even if in range, comma-separated (blank = none)',    target: 'EXCLUDED_REGIONS' },
-  { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: 'ALLOW_REMOTE' },
-  { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: 'EXCLUDED_DOMAINS' },
-  { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: 'TAILOR_FOR_PORTALS' },
+  { type: 'section', label: 'SEARCH FILTERS  -  optional; blank = not set (blanking a filled row clears that filter on Save)' },
+  { type: 'prop',   label: 'Keep ONLY these regions, comma-separated (blank = anywhere)',              target: 'ALLOWED_REGIONS', clearable: true },
+  { type: 'prop',   label: 'Drop these sub-areas even if in range, comma-separated (blank = none)',    target: 'EXCLUDED_REGIONS', clearable: true },
+  { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: 'ALLOW_REMOTE', clearable: true },
+  { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: 'EXCLUDED_DOMAINS', clearable: true },
+  { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: 'TAILOR_FOR_PORTALS', clearable: true },
   { type: 'section', label: 'SAVE' },
   { type: 'save',   label: 'Tick this box to save   (or run applySetup from the Run menu)' },
   { type: 'status', label: 'Status' }
@@ -1777,6 +1858,14 @@ function seedSetupTab() {
   const saveRow = rowOfType_('save');
   if (saveRow) sh.getRange(saveRow, 2).insertCheckboxes().setValue(false);
 
+  // The Save checkbox only works once installTriggers() has run - say so upfront
+  // instead of letting a tick silently do nothing.
+  const statusRow = rowOfType_('status');
+  if (statusRow) {
+    sh.getRange(statusRow, 2).setValue(
+      'Not saved yet. The Save checkbox works after installTriggers has been run - until then, run applySetup from the script editor instead.');
+  }
+
   try { ss.setActiveSheet(sh); ss.moveActiveSheet(1); } catch (e) { /* ignore */ }
   Logger.log('Setup tab ready. Fill it in, then tick Save (or run applySetup).');
 }
@@ -1803,9 +1892,7 @@ function applySetup() {
       if (v) cand[f.target] = v.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
     } else if (f.type === 'salary') {
       if (v) {
-        const nums = v.split(',')
-          .map(function (s) { return Number(String(s).replace(/[^0-9.]/g, '')); })
-          .filter(function (n) { return !isNaN(n) && n !== 0; });
+        const nums = parseSalaryRange_(v);
         if (nums.length >= 2) cand[f.target] = [nums[0], nums[1]];
         else if (nums.length === 1) cand[f.target] = [nums[0], nums[0]];
       }
@@ -1814,6 +1901,12 @@ function applySetup() {
         Config.set(f.target, v);
         keysSet.push(f.target);
         if (f.secret) clearRows.push(f.label);
+      } else if (f.clearable) {
+        // Non-secret filter cells keep their value visible, so a blank means the
+        // user cleared it - remove the stored property. (Secrets are auto-blanked
+        // after save and must never be deleted on a blank cell; likewise
+        // MASTER_CV_DOC_ID, which buildMasterCv() may have set outside the form.)
+        Config.remove(f.target);
       }
     }
   });
@@ -1860,6 +1953,20 @@ function maybeSaveSetup_(e) {
 }
 
 // --- helpers ---
+
+/**
+ * Parse a salary range typed in any common form: "15000, 20000",
+ * "R15 000 - R20 000", "R15,000-R20,000". Thousands separators (a space or comma
+ * followed by exactly three digits) are collapsed first, then the number groups
+ * are extracted in order. Returns an array of numbers (possibly empty).
+ */
+function parseSalaryRange_(v) {
+  const collapsed = String(v).replace(/(\d)[ ,](?=\d{3}(\D|$))/g, '$1');
+  return (collapsed.match(/\d+(?:\.\d+)?/g) || [])
+    .map(Number)
+    .filter(function (n) { return !isNaN(n) && n > 0; });
+}
+
 function readSetupAnswers_(sh) {
   const out = {};
   const last = sh.getLastRow();

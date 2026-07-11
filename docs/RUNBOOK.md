@@ -29,7 +29,7 @@ Run `draftAgencyOutreach` (or let it run on a light schedule). It creates one Gm
 
 ## Ingest filters (Setup tab, or Script Properties)
 Applied at ingest, before a job is even stored, so they save Gemini scoring quota:
-- `ALLOWED_REGIONS` (comma-separated, blank = anywhere): STRICT allow-list. When set, keep a job only if it is remote or its location matches one of these (e.g. `sandton,midrand,johannesburg`); jobs located elsewhere or with no readable location are dropped.
+- `ALLOWED_REGIONS` (comma-separated, blank = anywhere): allow-list. When set, keep a job if it is remote, its location matches one of these (e.g. `sandton,midrand,johannesburg`), its location is blank, or it is tagged with nothing but a bare vague tag (`gauteng` / `south africa` - see `VAGUE_LOCATION_TAGS`); a location naming a specific town outside the list is dropped. Blanking the Setup-tab cell and saving clears the filter.
 - `EXCLUDED_REGIONS` (comma-separated, blank = none): drop these sub-areas even when they fall inside the allowed range (e.g. `kempton park,pretoria,soweto`). Remote still overrides.
 - `ALLOW_REMOTE` (`true`/`false`, default `true`): keep remote jobs from anywhere, even when regions are restricted.
 - `EXCLUDED_DOMAINS` (comma-separated, e.g. `careers24`): hard-drop jobs from these boards. Matched against source and the resolved URL (so Adzuna redirects are caught too). `whatjobs` is always excluded regardless of this setting (its links route to a search page, not the listing).

@@ -9,7 +9,7 @@ const Tailor = {
   tailorCv(opp) {
     const masterId = Config.require(Config.KEYS.MASTER_CV_DOC_ID);
     const folder = this.folderForOpp_(opp);
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
 
     const summary = Gemini.generate(Prompts.render('cv_tailor', {
       candidate: JSON.stringify(cand),
@@ -28,7 +28,7 @@ const Tailor = {
 
   coverLetter(opp) {
     const folder = this.folderForOpp_(opp);
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
 
     const text = Gemini.generate(Prompts.render('cover_letter', {
       candidate: JSON.stringify(cand),

@@ -33,21 +33,28 @@ const Sources = {
       if (!job.id || seen[job.id]) continue;
       seen[job.id] = true;   // also dedups within this run
 
+      // Cheap string filters first - no network spent on jobs dropped anyway.
+      if (!self.locationOk_(job)) { offloc++; continue; }
+
       // Adzuna hands out redirect links: resolve to the real employer URL (durable,
-      // and exposes the true domain so the exclusion below can see it), and drop
-      // any that resolve to a dead page. JSearch/ATS already return direct links.
+      // and exposes the true domain so the exclusion below can see it), drop dead
+      // ones, and RE-KEY dedup on the resolved URL - Adzuna re-issues the same
+      // posting under rotating redirect wrappers, so hashing the wrapper duplicated
+      // rows. JSearch/ATS already return direct links.
       if (/^adzuna/.test(job.source)) {
         const r = self.resolveUrl_(job.url);
-        job.url = r.url;
         if (!r.alive) { dead++; continue; }
+        job.url = r.url;
+        job.id = self.hashId_(job.source, job.company, job.role, job.url);
+        if (seen[job.id]) continue;
+        seen[job.id] = true;
       }
+
+      if (self.isExcluded_(job)) { excluded++; continue; }
 
       // Best-effort application email from the posting text - turns a job into an
       // "email application" (tailored CV + Gmail draft) rather than a portal role.
       if (!job.contact_email && job.descr) job.contact_email = Outreach.harvestEmail_(job.descr);
-
-      if (self.isExcluded_(job)) { excluded++; continue; }
-      if (!self.locationOk_(job)) { offloc++; continue; }
 
       Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
         id: job.id, source: job.source, company: job.company, role: job.role,
@@ -66,15 +73,23 @@ const Sources = {
     return added;
   },
 
+  // Phrases boards print on a closed posting (many answer HTTP 200 for these).
+  EXPIRED_RE: /no longer available|job (has )?expired|position (has )?been filled|this job is no longer/i,
+
   /**
    * Resolve a redirect URL (e.g. Adzuna's) to the final employer URL by following
-   * Location headers manually, so we can store the direct link and see the true
-   * domain. Returns { url, alive }. Fails open (alive:true) on transient errors.
+   * Location headers AND meta-refresh redirects manually, so we can store the
+   * direct link and see the true domain (the whatjobs/careers24 exclusion needs
+   * it). Returns { url, alive }. The final page's body is checked for
+   * expired-posting phrases - a closed role served with HTTP 200 counts as dead.
+   * Fails open only after at least one hop resolved; an error on the very first
+   * request marks the link dead (the job simply re-ingests on a later run).
    */
   resolveUrl_(url, maxHops) {
     if (!url) return { url: url, alive: false };
     maxHops = maxHops || 4;
     let cur = url;
+    let hops = 0;
     try {
       for (let h = 0; h < maxHops; h++) {
         const res = UrlFetchApp.fetch(cur, {
@@ -86,21 +101,39 @@ const Sources = {
           let loc = hdr['Location'] || hdr['location'];
           if (Array.isArray(loc)) loc = loc[0];
           if (!loc) return { url: cur, alive: true };
-          if (!/^https?:\/\//i.test(loc)) {
-            const base = cur.match(/^(https?:\/\/[^\/]+)/);
-            loc = (base ? base[1] : '') + (loc.charAt(0) === '/' ? loc : '/' + loc);
-          }
-          cur = loc;
+          cur = this.absoluteUrl_(cur, loc);
+          hops++;
           continue;
         }
         if (code >= 400) return { url: cur, alive: false };
-        return { url: cur, alive: true };            // 2xx - resolved
+        // 2xx - final page (or a meta-refresh interstitial).
+        const body = res.getContentText().slice(0, 4000);
+        if (this.EXPIRED_RE.test(body)) return { url: cur, alive: false };
+        const meta = body.match(/http-equiv=["']?refresh["']?[^>]*url\s*=\s*["']?([^"'>\s]+)/i);
+        if (meta && meta[1] && h < maxHops - 1) {
+          cur = this.absoluteUrl_(cur, meta[1]);
+          hops++;
+          continue;
+        }
+        return { url: cur, alive: true };
       }
       return { url: cur, alive: true };              // too many hops; treat as alive
     } catch (e) {
       Logger.log('resolveUrl_ (' + url + '): ' + e);
-      return { url: cur, alive: true };              // fail open on transient blip
+      return { url: cur, alive: hops > 0 };          // hop-0 failure = source link unreachable
     }
+  },
+
+  // Make a redirect target absolute against the current URL.
+  absoluteUrl_(cur, loc) {
+    loc = String(loc).trim();
+    if (/^https?:\/\//i.test(loc)) return loc;
+    const m = cur.match(/^(https?):\/\/([^\/]+)/);
+    if (!m) return loc;
+    if (loc.indexOf('//') === 0) return m[1] + ':' + loc;          // protocol-relative
+    if (loc.charAt(0) === '/') return m[1] + '://' + m[2] + loc;   // root-relative
+    const base = cur.replace(/[?#].*$/, '');                       // path-relative
+    return base.indexOf('/', 8) === -1 ? (base + '/' + loc) : base.replace(/\/[^\/]*$/, '/') + loc;
   },
 
   // True if a job's board is on the exclusion list (checks source + resolved URL).
@@ -119,20 +152,28 @@ const Sources = {
 
   // Location gate. Remote (globally) is always kept. Excluded areas are dropped even
   // if otherwise in range. A job with no readable location is kept (don't miss vague
-  // opps). Otherwise, when an allow-list is set, keep only locations that match it.
+  // opps). When an allow-list is set, a location must match it to be kept - EXCEPT
+  // that a location which is nothing but a vague tag (a bare "Gauteng" or
+  // "South Africa") also passes. A string naming a specific town outside the range
+  // ("Mamelodi, Gauteng") does NOT ride the tag - the town itself must be allowed.
   locationOk_(job) {
     if (Config.allowRemote() && this.isRemote_(job)) return true;   // remote anywhere
 
     const loc = String(job.location || '').trim().toLowerCase();
+    if (!loc) return true;                                     // no readable location -> keep (don't miss)
 
     const blocked = Config.excludedRegions();
-    if (loc) for (let i = 0; i < blocked.length; i++) if (loc.indexOf(blocked[i]) !== -1) return false;
+    for (let i = 0; i < blocked.length; i++) if (loc.indexOf(blocked[i]) !== -1) return false;
 
     const allowed = Config.allowedRegions();
     if (!allowed.length) return true;                          // no allow-list -> keep the rest
-    if (!loc) return true;                                     // no readable location -> keep (don't miss)
     for (let j = 0; j < allowed.length; j++) if (loc.indexOf(allowed[j]) !== -1) return true;
-    return false;                                              // located outside the range -> drop
+
+    // Bare vague tags pass; anything left after stripping them names a town
+    // outside the range -> drop.
+    let rest = loc;
+    Config.vagueLocationTags().forEach(function (t) { rest = rest.split(t).join(''); });
+    return rest.replace(/[^a-z0-9]/g, '') === '';
   },
 
   /**
@@ -149,8 +190,8 @@ const Sources = {
       });
       const code = res.getResponseCode();
       if (code >= 400) return false;
-      const body = res.getContentText().slice(0, 4000).toLowerCase();
-      if (/no longer available|job (has )?expired|position (has )?been filled|this job is no longer/.test(body)) return false;
+      const body = res.getContentText().slice(0, 4000);
+      if (this.EXPIRED_RE.test(body)) return false;
       return true;
     } catch (e) {
       Logger.log('linkAlive_ (' + url + '): ' + e);

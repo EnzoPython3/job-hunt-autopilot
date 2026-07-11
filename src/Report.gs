@@ -51,8 +51,12 @@ const Report = {
 
   // Write this week's funnel to the KPIs tab; refresh the row if one already
   // exists for this week's Monday, so re-running does not create duplicates.
+  // Uses the SPREADSHEET's timezone throughout: Sheets coerces the written text
+  // to a Date stored at sheet-tz midnight, so formatting the read-back in any
+  // other zone can shift a calendar day and split the week into duplicate rows.
   writeKpiRow_(kpi) {
-    const week = Utilities.formatDate(this.mondayOf_(new Date()), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const tz = Crm.ss_().getSpreadsheetTimeZone();
+    const week = Utilities.formatDate(this.mondayOf_(new Date()), tz, 'yyyy-MM-dd');
     const row = {
       week_start: week, sourced: kpi.sourced, scored: kpi.scored, queued: kpi.queued,
       approved: kpi.approved, submitted: kpi.submitted, sent: kpi.sent,
@@ -60,7 +64,7 @@ const Report = {
     };
     const existing = Crm.readAll(Crm.TABS.KPIS).filter(function (r) {
       const w = (r.week_start instanceof Date)
-        ? Utilities.formatDate(r.week_start, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+        ? Utilities.formatDate(r.week_start, tz, 'yyyy-MM-dd')
         : String(r.week_start).slice(0, 10);
       return w === week;
     })[0];

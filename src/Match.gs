@@ -16,7 +16,7 @@ const Match = {
 
   scoreOne(opp) {
     const prompt = Prompts.render('scoring', {
-      candidate: JSON.stringify(Config.candidate()),
+      candidate: JSON.stringify(Config.promptCandidate()),
       job: JSON.stringify({ company: opp.company, role: opp.role, location: opp.location, mode: opp.mode, url: opp.url })
     });
     return Gemini.generate(prompt, { json: true, schema: this.SCHEMA, temperature: 0.2, maxOutputTokens: 700 });

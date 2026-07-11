@@ -6,7 +6,7 @@
 const InterviewPrep = {
   generateFor(opp) {
     const folder = Tailor.folderForOpp_(opp);
-    const cand = Config.candidate();
+    const cand = Config.promptCandidate();
 
     const text = Gemini.generate(Prompts.render('interview_prep', {
       candidate: JSON.stringify(cand),

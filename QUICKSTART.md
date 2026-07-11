@@ -72,7 +72,9 @@ In the spreadsheet you just opened, go to the **Setup** tab (first tab).
    Key, and RapidAPI if you got one).
 3. (Optional) Under **SEARCH FILTERS**, narrow things down:
    - **Keep only these regions** - e.g. `Sandton, Midrand, Johannesburg` to keep only jobs in
-     those areas. Blank = anywhere. (Remote jobs and jobs with no stated location still pass.)
+     those areas. Blank = anywhere. Remote jobs, jobs with no stated location, and jobs tagged
+     with just a bare region or country (a plain "Gauteng" or "South Africa") still pass; a job
+     naming a specific town outside your list is dropped.
    - **Drop these sub-areas** - e.g. `kempton park, pretoria` to drop specific places even when
      they fall inside a kept region. Blank = none.
    - **Allow remote from anywhere** - `true` keeps remote jobs worldwide even when you've
@@ -87,7 +89,8 @@ In the spreadsheet you just opened, go to the **Setup** tab (first tab).
 5. The **Status** row shows "Saved ...". Your keys are now stored securely and the key cells
    are cleared on purpose.
 
-You can come back and change any answer any time - fill it in and Save again.
+You can come back and change any answer any time - fill it in and Save again. To remove a
+search filter you set earlier, blank its cell and Save - the filter is cleared.
 
 ---
 

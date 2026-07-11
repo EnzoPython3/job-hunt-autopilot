@@ -39,6 +39,10 @@ const Config = {
     return v;
   },
 
+  remove(key) {
+    this.props_().deleteProperty(key);
+  },
+
   // --- Safe defaults; override any of these via the "Config" sheet tab ---
   defaults: {
     GEMINI_MODEL: 'gemini-2.5-flash',
@@ -95,6 +99,14 @@ const Config = {
         'client support', 'administrative assistant', 'office administrator', 'data capture'],
       summary: 'One or two sentences describing who you are, your experience and the role you want. This feeds the fit-scoring and the tailored CV summary, so make it specific and factual.'
     };
+  },
+
+  // Candidate profile for LLM prompts: internal-only fields stripped. Use this at
+  // every prompt call site - salaryTargetNet must never enter a model's context.
+  promptCandidate() {
+    const c = this.candidate();
+    delete c.salaryTargetNet;
+    return c;
   },
 
   /**
@@ -157,6 +169,16 @@ const Config = {
     const raw = this.get('ALLOWED_REGIONS');
     if (raw === null || raw === '') return [];
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  },
+
+  // Vague location tags. When an allow-list is set, a location that is NOTHING BUT
+  // one of these (a bare "Gauteng" or "South Africa") is still kept, so
+  // loosely-tagged roles aren't missed - but a string that also names a specific
+  // town must match allowedRegions. Override with Script Property VAGUE_LOCATION_TAGS.
+  vagueLocationTags() {
+    const raw = this.get('VAGUE_LOCATION_TAGS');
+    const src = (raw !== null && raw !== '') ? raw : 'gauteng,south africa,za';
+    return String(src).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
 
   // Regions to hard-exclude even if otherwise in range, comma-separated in Script

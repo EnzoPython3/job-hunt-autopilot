@@ -27,7 +27,7 @@ const SETUP_FIELDS = [
   { type: 'list',   label: 'Target roles (comma-separated)',                        target: 'tracks' },
   { type: 'list',   label: 'Regions / cities you will work in (comma-separated)',   target: 'geos' },
   { type: 'list',   label: 'Skill keywords (comma-separated)',                      target: 'keywords' },
-  { type: 'salary', label: 'Salary target net per month, low and high (e.g. 15000, 20000) - private, never shown', target: 'salaryTargetNet' },
+  { type: 'salary', label: 'Salary target net per month, low and high (e.g. 15000, 20000 or R15 000 - R20 000) - private, never shown', target: 'salaryTargetNet' },
   { type: 'text',   label: 'One-line summary of you (feeds fit-scoring and your CV summary)', target: 'summary' },
   { type: 'section', label: 'API KEYS  -  paste each; on Save they move to secure storage and these cells are cleared' },
   { type: 'prop',   label: 'Gemini API key',                       target: 'GEMINI_API_KEY', secret: true },
@@ -35,12 +35,12 @@ const SETUP_FIELDS = [
   { type: 'prop',   label: 'Adzuna App Key',                       target: 'ADZUNA_APP_KEY', secret: true },
   { type: 'prop',   label: 'RapidAPI key (optional, for JSearch)', target: 'RAPIDAPI_KEY', secret: true },
   { type: 'prop',   label: 'Master CV Google Doc ID (the Doc that contains a {{SUMMARY}} token)', target: 'MASTER_CV_DOC_ID' },
-  { type: 'section', label: 'SEARCH FILTERS  -  optional; leave blank to keep the defaults in brackets' },
-  { type: 'prop',   label: 'Keep ONLY these regions, comma-separated (blank = anywhere)',              target: 'ALLOWED_REGIONS' },
-  { type: 'prop',   label: 'Drop these sub-areas even if in range, comma-separated (blank = none)',    target: 'EXCLUDED_REGIONS' },
-  { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: 'ALLOW_REMOTE' },
-  { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: 'EXCLUDED_DOMAINS' },
-  { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: 'TAILOR_FOR_PORTALS' },
+  { type: 'section', label: 'SEARCH FILTERS  -  optional; blank = not set (blanking a filled row clears that filter on Save)' },
+  { type: 'prop',   label: 'Keep ONLY these regions, comma-separated (blank = anywhere)',              target: 'ALLOWED_REGIONS', clearable: true },
+  { type: 'prop',   label: 'Drop these sub-areas even if in range, comma-separated (blank = none)',    target: 'EXCLUDED_REGIONS', clearable: true },
+  { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: 'ALLOW_REMOTE', clearable: true },
+  { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: 'EXCLUDED_DOMAINS', clearable: true },
+  { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: 'TAILOR_FOR_PORTALS', clearable: true },
   { type: 'section', label: 'SAVE' },
   { type: 'save',   label: 'Tick this box to save   (or run applySetup from the Run menu)' },
   { type: 'status', label: 'Status' }
@@ -89,6 +89,14 @@ function seedSetupTab() {
   const saveRow = rowOfType_('save');
   if (saveRow) sh.getRange(saveRow, 2).insertCheckboxes().setValue(false);
 
+  // The Save checkbox only works once installTriggers() has run - say so upfront
+  // instead of letting a tick silently do nothing.
+  const statusRow = rowOfType_('status');
+  if (statusRow) {
+    sh.getRange(statusRow, 2).setValue(
+      'Not saved yet. The Save checkbox works after installTriggers has been run - until then, run applySetup from the script editor instead.');
+  }
+
   try { ss.setActiveSheet(sh); ss.moveActiveSheet(1); } catch (e) { /* ignore */ }
   Logger.log('Setup tab ready. Fill it in, then tick Save (or run applySetup).');
 }
@@ -115,9 +123,7 @@ function applySetup() {
       if (v) cand[f.target] = v.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
     } else if (f.type === 'salary') {
       if (v) {
-        const nums = v.split(',')
-          .map(function (s) { return Number(String(s).replace(/[^0-9.]/g, '')); })
-          .filter(function (n) { return !isNaN(n) && n !== 0; });
+        const nums = parseSalaryRange_(v);
         if (nums.length >= 2) cand[f.target] = [nums[0], nums[1]];
         else if (nums.length === 1) cand[f.target] = [nums[0], nums[0]];
       }
@@ -126,6 +132,12 @@ function applySetup() {
         Config.set(f.target, v);
         keysSet.push(f.target);
         if (f.secret) clearRows.push(f.label);
+      } else if (f.clearable) {
+        // Non-secret filter cells keep their value visible, so a blank means the
+        // user cleared it - remove the stored property. (Secrets are auto-blanked
+        // after save and must never be deleted on a blank cell; likewise
+        // MASTER_CV_DOC_ID, which buildMasterCv() may have set outside the form.)
+        Config.remove(f.target);
       }
     }
   });
@@ -172,6 +184,20 @@ function maybeSaveSetup_(e) {
 }
 
 // --- helpers ---
+
+/**
+ * Parse a salary range typed in any common form: "15000, 20000",
+ * "R15 000 - R20 000", "R15,000-R20,000". Thousands separators (a space or comma
+ * followed by exactly three digits) are collapsed first, then the number groups
+ * are extracted in order. Returns an array of numbers (possibly empty).
+ */
+function parseSalaryRange_(v) {
+  const collapsed = String(v).replace(/(\d)[ ,](?=\d{3}(\D|$))/g, '$1');
+  return (collapsed.match(/\d+(?:\.\d+)?/g) || [])
+    .map(Number)
+    .filter(function (n) { return !isNaN(n) && n > 0; });
+}
+
 function readSetupAnswers_(sh) {
   const out = {};
   const last = sh.getLastRow();

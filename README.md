@@ -56,7 +56,7 @@ Goal: help book **2-5 interviews/week**.
   - `Crm.gs` Sheet CRM - `Sources.gs` job ingestion - `Match.gs` scoring - `Tailor.gs` CV/cover - `Outreach.gs` Gmail drafts
   - `Loop.gs` trigger entry points - `Triggers.gs` scheduler - `Report.gs` weekly summary - `Setup.gs` one-time bootstrap
 - `data/agencies.sample.csv` - starter SA recruitment-agency / BPO list (fill in emails).
-- `docs/` - `SETUP.md` (clasp path), `RUNBOOK.md` (daily use + tuning), `SHEET_SCHEMA.md` (CRM columns).
+- `docs/` - `SETUP.md` (clasp path), `RUNBOOK.md` (daily use + tuning), `SHEET_SCHEMA.md` (CRM columns), `RELEASES.md` (maintainer-only: how to cut a versioned share zip).
 - `cv/TEMPLATE-CV.md` - skeleton master CV; turn it into a Google Doc with a `{{SUMMARY}}`
   token (see QUICKSTART step on the CV).
 

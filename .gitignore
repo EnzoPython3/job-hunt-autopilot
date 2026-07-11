@@ -1,6 +1,7 @@
 .DS_Store
 node_modules/
 npm-debug.log*
+releases/
 
 # clasp local link (contains your scriptId) - keep it out of git
 .clasp.json

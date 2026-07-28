@@ -113,11 +113,11 @@ test('Match limits new approval rows per scoring run', () => {
   }).Match;
 
   const result = Match.scoreQueue();
-  assert.equal(result.scored, 4);
+  assert.equal(result.scored, 2);
   assert.equal(result.queued, 2);
   assert.equal(approvals.length, 2);
   assert.equal(approvals[0][1].id, 'opp-0');
   assert.equal(approvals[1][1].id, 'opp-1');
   assert.equal(updates.filter((args) => args[2].status === 'queued_for_approval').length, 2);
-  assert.equal(updates.filter((args) => args[2].status === 'scored').length, 2);
+  assert.equal(updates.length, 2);
 });

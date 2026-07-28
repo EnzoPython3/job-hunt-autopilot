@@ -306,3 +306,14 @@ test('source adapters stop before a network request when the deadline expires', 
   assert.equal(Sources.fromJSearch_(400000).length, 0);
   assert.equal(calls, 0);
 });
+
+test('ingest does not count a deadline-stopped redirect as a dead link', () => {
+  const loaded = loadSources({
+    properties: { ADZUNA_APP_ID: 'app-id', ADZUNA_APP_KEY: 'app-key' },
+    fetch: () => response(200, { results: [{ title: 'Role', redirect_url: 'https://jobs.example.test/role' }] })
+  });
+  loaded.Sources.resolveUrl_ = () => ({ alive: false, stopped: true });
+  assert.equal(loaded.Sources.ingest(10), 0);
+  assert.equal(loaded.logs.some((line) => line.includes('dead-link')), false);
+  assert.equal(loaded.logs.some((line) => line.includes('time budget')), true);
+});

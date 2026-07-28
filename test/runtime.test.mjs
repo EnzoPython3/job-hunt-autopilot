@@ -642,3 +642,24 @@ test('agency outreach claims each contact and releases its token after draft per
   assert.equal(events[0][2], 'contact-agency');
   assert.equal(events[2][3], 'agency-token');
 });
+
+test('agency outreach does not claim a contact without a stable contact ID', () => {
+  const events = [];
+  const { Outreach } = loadGs(resolve(ROOT, 'src/Outreach.gs'), {
+    globals: {
+      Config: { tunable: () => 1, promptCandidate: () => ({ name: 'A' }) },
+      Validation: { isEmail: () => true },
+      Crm: {
+        TABS: { CONTACTS: 'Contacts' },
+        readAll: () => [{ _row: 7, type: 'agency', email: 'agency@example.test', name: 'Agency' }],
+        claim: (...args) => { events.push(['claim', ...args]); return 'wrong-token'; },
+        updateRow: (...args) => events.push(['update', ...args])
+      },
+      Runtime: { boundedBatch: (value) => value, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error) }) },
+      GmailApp: { getDraft: () => null, getDrafts: () => [], createDraft: () => ({ getId: () => 'agency-draft' }) }
+    }, names: ['Outreach']
+  });
+  const result = Outreach.draftAgencyOutreach(1, Date.now() + 10000);
+  assert.equal(result.created, 0);
+  assert.equal(events.some((event) => event[0] === 'claim'), false);
+});

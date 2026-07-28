@@ -55,35 +55,64 @@ const Match = {
     const self = this;
     let scored = 0, queued = 0;
     pending.forEach(function (opp) {
+      let claimed = false;
       try {
+        claimed = Crm.claim ? Crm.claim(Crm.TABS.OPPORTUNITIES, opp.id) : true;
+        if (!claimed) return;
         const r = self.scoreOne(opp);
         const pass = Number(r.fit_score) >= threshold;
         if (pass && queued >= approvalLimit) return;
         const canQueue = pass && queued < approvalLimit;
-        const status = canQueue ? 'queued_for_approval' : 'scored';
+        if (canQueue) {
+          const approvalPayload = self.approval_(opp, r);
+          Crm.upsertApproval(approvalPayload);
+          const verified = Crm.findApproval(opp.id);
+          if (!verified || String(verified.id || '').trim() !== String(opp.id || '').trim()) {
+            throw new Error('Approval row verification failed for ' + opp.id);
+          }
+        }
         Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
           fit_score: r.fit_score, track: r.track, rationale: r.rationale,
-          status: status, updated_at: new Date()
+          status: canQueue ? 'queued_for_approval' : 'scored', failure_message: '', updated_at: new Date()
         });
         scored++;
-        if (canQueue) { self.pushToApprovals_(opp, r); queued++; }
+        if (canQueue) queued++;
       } catch (e) {
         Logger.log('score ' + opp.id + ': ' + e);
-        if (!e || !e.scoreValidation) {
+        const message = self.failureMessage_(e);
+        if (Crm.recordOpportunityFailure) {
+          Crm.recordOpportunityFailure(opp._row, message);
+        } else if (!e || !e.scoreValidation) {
           Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
-            status: 'scored', rationale: 'score error: ' + e, updated_at: new Date()
+            status: 'sourced', failure_message: message, updated_at: new Date()
           });
+        }
+      } finally {
+        if (claimed && Crm.releaseClaim) {
+          try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, opp.id); } catch (releaseError) {
+            Logger.log('release score claim ' + opp.id + ': ' + releaseError);
+          }
         }
       }
     });
     return { scored: scored, queued: queued };
   },
 
-  pushToApprovals_(opp, r) {
-    Crm.appendRow(Crm.TABS.APPROVALS, {
+  approval_(opp, r) {
+    return {
       id: opp.id, company: opp.company, role: opp.role, url: opp.url,
       fit_score: r.fit_score, track: r.track, rationale: r.rationale,
-      channel: opp.contact_email ? 'email' : 'portal', decision: '', edited_notes: ''
-    });
-  }
+      channel: opp.contact_email ? 'email' : 'portal'
+    };
+  },
+
+  failureMessage_(error) {
+    if (typeof Runtime !== 'undefined' && Runtime.failure) {
+      return Runtime.failure('opportunity', error).message;
+    }
+    let message = '';
+    try { message = String(error && error.message ? error.message : error || 'Unknown failure'); } catch (e) { message = 'Unknown failure'; }
+    return message.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240);
+  },
+
 };

@@ -105,7 +105,8 @@ test('Match limits new approval rows per scoring run', () => {
         TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' },
         listByStatus: () => opportunities,
         updateRow: (...args) => updates.push(args),
-        appendRow: (...args) => approvals.push(args)
+        upsertApproval: (obj) => { approvals.push(['Approvals', obj]); return obj; },
+        findApproval: (id) => approvals.map((entry) => entry[1]).find((row) => row.id === id) || null
       },
       Logger: { log: () => {} }
     },
@@ -139,7 +140,7 @@ test('Match claims each opportunity before Gemini and skips an active claim', ()
       Crm: {
         TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' },
         listByStatus: () => [opportunity],
-        claim: (...args) => events.push(['claim', ...args]) || false,
+        claim: (...args) => { events.push(['claim', ...args]); return false; },
         releaseClaim: (...args) => events.push(['release', ...args]),
         updateRow: (...args) => events.push(['update', ...args]),
         upsertApproval: () => { throw new Error('approval must not run'); }
@@ -176,10 +177,10 @@ test('Match verifies the approval row before advancing the opportunity status', 
       Crm: {
         TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' },
         listByStatus: () => [opportunity],
-        claim: (...args) => events.push(['claim', ...args]) || true,
+        claim: (...args) => { events.push(['claim', ...args]); return true; },
         releaseClaim: (...args) => events.push(['release', ...args]),
-        upsertApproval: (...args) => events.push(['upsert', ...args]) || approval,
-        findApproval: (...args) => events.push(['verify', ...args]) || approval,
+        upsertApproval: (...args) => { events.push(['upsert', ...args]); return approval; },
+        findApproval: (...args) => { events.push(['verify', ...args]); return approval; },
         updateRow: (...args) => events.push(['update', ...args]),
       },
       Logger: { log: () => {} }
@@ -191,7 +192,7 @@ test('Match verifies the approval row before advancing the opportunity status', 
   assert.equal(result.scored, 1);
   assert.equal(result.queued, 1);
   assert.deepEqual(events.map((event) => event[0]), ['claim', 'gemini', 'upsert', 'verify', 'update', 'release']);
-  assert.equal(events[4][2].status, 'queued_for_approval');
+  assert.equal(events[4][3].status, 'queued_for_approval');
 });
 
 test('Match records a retryable scoring failure and releases the claim', () => {
@@ -224,8 +225,8 @@ test('Match records a retryable scoring failure and releases the claim', () => {
   assert.equal(result.scored, 0);
   assert.equal(result.queued, 0);
   const update = events.find((event) => event[0] === 'update');
-  assert.equal(update[2].status, 'sourced');
-  assert.match(update[2].failure_message, /temporary Gemini failure/);
+  assert.equal(update[3].status, 'sourced');
+  assert.match(update[3].failure_message, /temporary Gemini failure/);
   assert.deepEqual(events.map((event) => event[0]), ['claim', 'update', 'release']);
 });
 
@@ -356,4 +357,31 @@ test('Crm releaseClaim uses the stable key and clears only its own claim', () =>
   assert.equal(updates[0][2].processing_state, '');
   assert.equal(updates[0][2].processing_key, '');
   assert.equal(updates[0][2].processing_started_at, '');
+});
+
+test('Crm upsertApproval reuses the stable opportunity row and verifies persistence', () => {
+  const updates = [];
+  const appRow = {
+    _row: 9, id: 'opp-approval', company: 'Old Co', role: 'Old Role', fit_score: 70,
+    decision: 'Approve', edited_notes: 'Keep this human note'
+  };
+  const rows = [appRow];
+  const { Crm } = loadGs(resolve(ROOT, 'src/Crm.gs'), { names: ['Crm'] });
+  Crm.readAll = () => rows;
+  Crm.updateRow = (tab, row, obj) => {
+    updates.push([tab, row, obj]);
+    Object.assign(appRow, obj);
+  };
+  Crm.appendRow = () => { throw new Error('duplicate approval row'); };
+  Crm.Runtime = { withScriptLock: (name, waitMs, fn) => fn() };
+
+  const result = Crm.upsertApproval({
+    id: 'opp-approval', company: 'New Co', role: 'New Role', fit_score: 92,
+    track: 'support', rationale: 'Strong fit'
+  });
+  assert.equal(result.id, 'opp-approval');
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0][1], 9);
+  assert.equal(appRow.decision, 'Approve');
+  assert.equal(appRow.edited_notes, 'Keep this human note');
 });

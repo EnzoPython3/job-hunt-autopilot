@@ -668,6 +668,34 @@ const Crm = {
     return null;
   },
 
+  findApproval(id) {
+    const key = String(id || '').trim();
+    if (!key) return null;
+    const rows = this.readAll(this.TABS.APPROVALS);
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].id || '').trim() === key) return rows[i];
+    }
+    return null;
+  },
+
+  upsertApproval(obj) {
+    const key = String(obj && obj.id || '').trim();
+    if (!key) throw new Error('Approval opportunity ID is required');
+    const runtime = this.Runtime || Runtime;
+    const self = this;
+    return runtime.withScriptLock('approval:' + key, 5000, function () {
+      const existing = self.findApproval(key);
+      if (existing) {
+        self.updateRow(self.TABS.APPROVALS, existing._row, obj);
+      } else {
+        self.appendRow(self.TABS.APPROVALS, obj);
+      }
+      const verified = self.findApproval(key);
+      if (!verified) throw new Error('Approval row was not persisted for ' + key);
+      return verified;
+    });
+  },
+
   existsOpportunity(id) {
     return this.findOpportunity(id) !== null;
   },
@@ -678,6 +706,12 @@ const Crm = {
 
   setStatus(rowNumber, status) {
     this.updateRow(this.TABS.OPPORTUNITIES, rowNumber, { status: status, updated_at: new Date() });
+  },
+
+  recordOpportunityFailure(rowNumber, message) {
+    this.updateRow(this.TABS.OPPORTUNITIES, rowNumber, {
+      status: 'sourced', failure_message: String(message || 'Unknown failure').slice(0, 240), updated_at: new Date()
+    });
   },
 
   claim(tab, stableId, options) {
@@ -743,6 +777,7 @@ const Crm = {
  */
 const Sources = {
   lastFailureReport_: [],
+  MAX_RESPONSE_CHARS_: 200000,
 
   ingest(cap) {
     cap = cap || Config.tunable('DAILY_SOURCE_CAP');
@@ -751,12 +786,14 @@ const Sources = {
     const found = [];
     const failures = [];
     this.lastFailureReport_ = failures;
+    this.failureContext_ = failures;
     try { Array.prototype.push.apply(found, this.fromJSearch_()); } catch (e) { this.recordFailure_(failures, 'JSearch'); }
     try { Array.prototype.push.apply(found, this.fromAdzuna()); } catch (e) { this.recordFailure_(failures, 'Adzuna'); }
     Config.atsBoards().forEach(function (b) {
       try { Array.prototype.push.apply(found, self.fromAts(b)); }
       catch (e) { self.recordFailure_(failures, 'ATS ' + b.type); }
     });
+    this.failureContext_ = null;
 
     // Read existing ids ONCE. Calling Crm.existsOpportunity per job re-read the
     // whole sheet each time (quadratic, and worse as the sheet grows) - that plus
@@ -817,6 +854,7 @@ const Sources = {
   },
 
   recordFailure_(failures, label) {
+    failures = failures || this.failureContext_ || this.lastFailureReport_;
     if (failures.length >= 20) return;
     const entry = String(label) + ': source request failed';
     failures.push(entry);
@@ -949,7 +987,13 @@ const Sources = {
   getJson_(url) {
     const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
     if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode());
-    return JSON.parse(res.getContentText());
+    return JSON.parse(this.responseBody_(res));
+  },
+
+  responseBody_(res) {
+    const body = String(res.getContentText() || '');
+    if (body.length > this.MAX_RESPONSE_CHARS_) throw new Error('source response too large');
+    return body;
   },
 
   fromAdzuna() {
@@ -968,26 +1012,29 @@ const Sources = {
           '&sort_by=date' +          // newest first, so redirects are less likely expired
           '&max_days_old=10' +       // tighter window - stale postings 404 on click
           '&content-type=application/json';
-        const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
-        if (res.getResponseCode() !== 200) { Logger.log('Adzuna ' + country + '/' + what + ' HTTP ' + res.getResponseCode()); return; }
-        const data = JSON.parse(res.getContentText());
-        if (!data || !Array.isArray(data.results)) return;
-        data.results.forEach(function (r) {
-          if (!r || typeof r !== 'object') return;
-          const company = (r.company && r.company.display_name) || 'Unknown';
-          const role = r.title || '';
-          const jurl = r.redirect_url || '';
-          const valid = self.job_(
-            'adzuna:' + country, company, role, jurl,
-            (r.location && r.location.display_name) || '',
-            /remote|work from home|wfh/.test((role + ' ' + (r.description || '')).toLowerCase()),
-            r.created || '', r.description || ''
-          );
-          if (!valid) return;
-          const hay = (role + ' ' + (r.description || '')).toLowerCase();
-          valid.mode = /remote|work from home|wfh/.test(hay) ? 'remote' : '';
-          out.push(valid);
-        });
+        const label = 'Adzuna ' + country + '/' + what;
+        try {
+          const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
+          if (res.getResponseCode() !== 200) { self.recordFailure_(null, label); return; }
+          const data = JSON.parse(self.responseBody_(res));
+          if (!data || !Array.isArray(data.results)) return;
+          data.results.forEach(function (r) {
+            if (!r || typeof r !== 'object') return;
+            const company = (r.company && r.company.display_name) || 'Unknown';
+            const role = r.title || '';
+            const jurl = r.redirect_url || '';
+            const valid = self.job_(
+              'adzuna:' + country, company, role, jurl,
+              (r.location && r.location.display_name) || '',
+              /remote|work from home|wfh/.test((role + ' ' + (r.description || '')).toLowerCase()),
+              r.created || '', r.description || ''
+            );
+            if (!valid) return;
+            const hay = (role + ' ' + (r.description || '')).toLowerCase();
+            valid.mode = /remote|work from home|wfh/.test(hay) ? 'remote' : '';
+            out.push(valid);
+          });
+        } catch (e) { self.recordFailure_(null, label); }
       });
     });
     return out;
@@ -1011,29 +1058,29 @@ const Sources = {
         '?query=' + encodeURIComponent(what + ' in South Africa') +
         '&country=za' +
         '&date_posted=' + encodeURIComponent(datePosted);
-      const res = UrlFetchApp.fetch(url, {
-        method: 'get',
-        muteHttpExceptions: true,
-        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
-        validateHttpsCertificates: true
-      });
-      if (res.getResponseCode() !== 200) {
-        Logger.log('JSearch HTTP ' + res.getResponseCode());
-        return;
-      }
-      const data = JSON.parse(res.getContentText());
-      self.pickJobs_(data).forEach(function (j) {
-        if (!j || typeof j !== 'object') return;
-        const company = j.employer_name || 'Unknown';
-        const role = j.job_title || '';
-        const jurl = j.job_apply_link || '';
-        if (!jurl) return;
-        const publisher = j.job_publisher || 'jsearch';
-        const loc = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || (j.job_location || '');
-        const valid = self.job_('jsearch:' + publisher, company, role, jurl, loc,
-          j.job_is_remote, j.job_posted_at_datetime_utc || '', j.job_description || '');
-        if (valid) out.push(valid);
-      });
+      const label = 'JSearch ' + what;
+      try {
+        const res = UrlFetchApp.fetch(url, {
+          method: 'get',
+          muteHttpExceptions: true,
+          headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+          validateHttpsCertificates: true
+        });
+        if (res.getResponseCode() !== 200) { self.recordFailure_(null, label); return; }
+        const data = JSON.parse(self.responseBody_(res));
+        self.pickJobs_(data).forEach(function (j) {
+          if (!j || typeof j !== 'object') return;
+          const company = j.employer_name || 'Unknown';
+          const role = j.job_title || '';
+          const jurl = j.job_apply_link || '';
+          if (!jurl) return;
+          const publisher = j.job_publisher || 'jsearch';
+          const loc = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || (j.job_location || '');
+          const valid = self.job_('jsearch:' + publisher, company, role, jurl, loc,
+            j.job_is_remote, j.job_posted_at_datetime_utc || '', j.job_description || '');
+          if (valid) out.push(valid);
+        });
+      } catch (e) { self.recordFailure_(null, label); }
     });
     return out;
   },
@@ -1191,37 +1238,66 @@ const Match = {
     const self = this;
     let scored = 0, queued = 0;
     pending.forEach(function (opp) {
+      let claimed = false;
       try {
+        claimed = Crm.claim ? Crm.claim(Crm.TABS.OPPORTUNITIES, opp.id) : true;
+        if (!claimed) return;
         const r = self.scoreOne(opp);
         const pass = Number(r.fit_score) >= threshold;
         if (pass && queued >= approvalLimit) return;
         const canQueue = pass && queued < approvalLimit;
-        const status = canQueue ? 'queued_for_approval' : 'scored';
+        if (canQueue) {
+          const approvalPayload = self.approval_(opp, r);
+          Crm.upsertApproval(approvalPayload);
+          const verified = Crm.findApproval(opp.id);
+          if (!verified || String(verified.id || '').trim() !== String(opp.id || '').trim()) {
+            throw new Error('Approval row verification failed for ' + opp.id);
+          }
+        }
         Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
           fit_score: r.fit_score, track: r.track, rationale: r.rationale,
-          status: status, updated_at: new Date()
+          status: canQueue ? 'queued_for_approval' : 'scored', failure_message: '', updated_at: new Date()
         });
         scored++;
-        if (canQueue) { self.pushToApprovals_(opp, r); queued++; }
+        if (canQueue) queued++;
       } catch (e) {
         Logger.log('score ' + opp.id + ': ' + e);
-        if (!e || !e.scoreValidation) {
+        const message = self.failureMessage_(e);
+        if (Crm.recordOpportunityFailure) {
+          Crm.recordOpportunityFailure(opp._row, message);
+        } else if (!e || !e.scoreValidation) {
           Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
-            status: 'scored', rationale: 'score error: ' + e, updated_at: new Date()
+            status: 'sourced', failure_message: message, updated_at: new Date()
           });
+        }
+      } finally {
+        if (claimed && Crm.releaseClaim) {
+          try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, opp.id); } catch (releaseError) {
+            Logger.log('release score claim ' + opp.id + ': ' + releaseError);
+          }
         }
       }
     });
     return { scored: scored, queued: queued };
   },
 
-  pushToApprovals_(opp, r) {
-    Crm.appendRow(Crm.TABS.APPROVALS, {
+  approval_(opp, r) {
+    return {
       id: opp.id, company: opp.company, role: opp.role, url: opp.url,
       fit_score: r.fit_score, track: r.track, rationale: r.rationale,
-      channel: opp.contact_email ? 'email' : 'portal', decision: '', edited_notes: ''
-    });
-  }
+      channel: opp.contact_email ? 'email' : 'portal'
+    };
+  },
+
+  failureMessage_(error) {
+    if (typeof Runtime !== 'undefined' && Runtime.failure) {
+      return Runtime.failure('opportunity', error).message;
+    }
+    let message = '';
+    try { message = String(error && error.message ? error.message : error || 'Unknown failure'); } catch (e) { message = 'Unknown failure'; }
+    return message.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240);
+  },
+
 };
 
 
@@ -2402,7 +2478,7 @@ function diagnose() {
       const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
       out.push('  HTTP ' + res.getResponseCode());
       try {
-        const d = JSON.parse(res.getContentText());
+        const d = JSON.parse(diagnosticResponseBody_(res));
         out.push('  response shape: ' + (d && Array.isArray(d.results) ? 'valid' : 'unexpected'));
       } catch (e) { out.push('  response shape: invalid JSON'); }
     }
@@ -2426,7 +2502,7 @@ function diagnose() {
       if (res.getResponseCode() !== 200) out.push('  response shape: unavailable');
       else {
         try {
-          const d = JSON.parse(res.getContentText());
+          const d = JSON.parse(diagnosticResponseBody_(res));
           out.push('  response shape: ' + (Sources.pickJobs_(d).length ? 'valid' : 'empty or unexpected'));
         } catch (e) { out.push('  response shape: invalid JSON'); }
       }
@@ -2500,6 +2576,12 @@ function pruneDeadLinks() {
     Alerts.notify('pruneDeadLinks', e);
     throw e;
   }
+}
+
+function diagnosticResponseBody_(res) {
+  const body = String(res.getContentText() || '');
+  if (body.length > 20000) throw new Error('diagnostic response too large');
+  return body;
 }
 
 

@@ -102,6 +102,34 @@ const Crm = {
     return null;
   },
 
+  findApproval(id) {
+    const key = String(id || '').trim();
+    if (!key) return null;
+    const rows = this.readAll(this.TABS.APPROVALS);
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].id || '').trim() === key) return rows[i];
+    }
+    return null;
+  },
+
+  upsertApproval(obj) {
+    const key = String(obj && obj.id || '').trim();
+    if (!key) throw new Error('Approval opportunity ID is required');
+    const runtime = this.Runtime || Runtime;
+    const self = this;
+    return runtime.withScriptLock('approval:' + key, 5000, function () {
+      const existing = self.findApproval(key);
+      if (existing) {
+        self.updateRow(self.TABS.APPROVALS, existing._row, obj);
+      } else {
+        self.appendRow(self.TABS.APPROVALS, obj);
+      }
+      const verified = self.findApproval(key);
+      if (!verified) throw new Error('Approval row was not persisted for ' + key);
+      return verified;
+    });
+  },
+
   existsOpportunity(id) {
     return this.findOpportunity(id) !== null;
   },
@@ -112,6 +140,12 @@ const Crm = {
 
   setStatus(rowNumber, status) {
     this.updateRow(this.TABS.OPPORTUNITIES, rowNumber, { status: status, updated_at: new Date() });
+  },
+
+  recordOpportunityFailure(rowNumber, message) {
+    this.updateRow(this.TABS.OPPORTUNITIES, rowNumber, {
+      status: 'sourced', failure_message: String(message || 'Unknown failure').slice(0, 240), updated_at: new Date()
+    });
   },
 
   claim(tab, stableId, options) {

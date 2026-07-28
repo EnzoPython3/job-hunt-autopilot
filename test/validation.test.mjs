@@ -7,13 +7,16 @@ import { loadGs } from './helpers/load-gs.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { Validation } = loadGs(resolve(ROOT, 'src/Validation.gs'), {
-  globals: { URL },
   names: ['Validation']
+});
+
+test('Validation loads and parses HTTPS URLs without a URL Web API global', () => {
+  assert.equal(Validation.safeHttpsUrl('https://example.com/jobs'), 'https://example.com/jobs');
 });
 
 test('safeHttpsUrl accepts and normalises HTTPS URLs', () => {
   assert.equal(
-    Validation.safeHttpsUrl('  HTTPS://Example.COM:443/jobs/../openings?id=7#apply  '),
+    Validation.safeHttpsUrl('HTTPS://Example.COM:443/jobs/../openings?id=7#apply'),
     'https://example.com/openings?id=7#apply'
   );
   assert.equal(Validation.safeHttpsUrl('https://jobs.example.test/path?q=a%20b'), 'https://jobs.example.test/path?q=a%20b');
@@ -31,29 +34,30 @@ test('safeHttpsUrl rejects unsafe schemes, malformed values, empty values, and c
     'file:///etc/passwd',
     'https://user:pass@example.com/job',
     'https://user@example.com/job',
+    'https://@example.com/job',
+    'https://:password@example.com/job',
     'https://',
     'not a URL',
-    'https://example.com/\nredirect'
+    'https://example.com/\nredirect',
+    ' https://example.com/job',
+    'https://example.com/job path',
+    'https://example..com/job',
+    'https://-example.com/job',
+    'https://example-.com/job',
+    'https://example.com:',
+    'https://example.com:abc/job',
+    'https://[::1/job'
   ]) {
     assert.equal(Validation.safeHttpsUrl(value), '', `expected rejection for ${String(value)}`);
   }
 });
 
-test('safeHttpsUrl allows only HTTPS redirect targets, including relative targets resolved by the caller', () => {
-  const base = 'https://jobs.example.com/listing/123';
-  const resolveRedirect = (target) => {
-    try {
-      return Validation.safeHttpsUrl(new URL(target, base).toString());
-    } catch {
-      return '';
-    }
-  };
-
-  assert.equal(resolveRedirect('/apply'), 'https://jobs.example.com/apply');
-  assert.equal(resolveRedirect('//careers.example.com/apply'), 'https://careers.example.com/apply');
-  assert.equal(resolveRedirect('http://careers.example.com/apply'), '');
-  assert.equal(resolveRedirect('javascript:alert(1)'), '');
-  assert.equal(resolveRedirect('data:text/html,nope'), '');
+test('safeHttpsUrl allows only HTTPS redirect targets after the caller resolves them', () => {
+  assert.equal(Validation.safeHttpsUrl('https://jobs.example.com/apply'), 'https://jobs.example.com/apply');
+  assert.equal(Validation.safeHttpsUrl('https://careers.example.com/apply'), 'https://careers.example.com/apply');
+  assert.equal(Validation.safeHttpsUrl('http://careers.example.com/apply'), '');
+  assert.equal(Validation.safeHttpsUrl('javascript:alert(1)'), '');
+  assert.equal(Validation.safeHttpsUrl('data:text/html,nope'), '');
 });
 
 test('safeHref returns an HTML-safe href only for a validated HTTPS URL', () => {

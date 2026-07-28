@@ -1586,7 +1586,7 @@ const Outreach = {
     if (!to) return null;
     if (typeof Validation === 'undefined' || !Validation.isEmail(to)) throw new Error('Invalid contact email');
     const operationKey = this.operationKey_(opp, 'application');
-    const stored = this.draftById_(opp.draft_id);
+    const stored = this.draftById_(opp.draft_id) || this.draftByKey_(operationKey);
     if (stored) return stored.getId();
 
     const subject = '[JHA:' + operationKey + '] Application: ' + opp.role + ' - ' + cand.name;
@@ -1996,7 +1996,10 @@ function prepApprovedBatch() {
           failures.push(failure);
           if (Crm.recordOpportunityFailure) Crm.recordOpportunityFailure(opp._row, failure.message);
         } finally {
-          if (claimToken && Crm.releaseClaim) Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, opp.id, claimToken);
+          if (claimToken && Crm.releaseClaim) {
+            try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, opp.id, claimToken); }
+            catch (releaseError) { failures.push(Runtime.failure('release:' + a.id, releaseError)); }
+          }
         }
       }
       Logger.log('prepApprovedBatch: prepared ' + done);
@@ -2055,7 +2058,7 @@ function prepInterviews() {
     return Runtime.withScriptLock('prepInterviews', 5000, function () {
       Crm.ensureSchema();
       const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
-        return o.status === 'interview' && String(o.notes || '').indexOf('[interview:') === -1;
+        return o.status === 'interview' && String(o.notes || '').indexOf('[interview:') === -1 && String(o.notes || '').indexOf('[prepped]') === -1;
       });
       let n = 0;
       const failures = [];

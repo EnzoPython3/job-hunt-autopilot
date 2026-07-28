@@ -40,7 +40,7 @@ const Outreach = {
     if (!to) return null;
     if (typeof Validation === 'undefined' || !Validation.isEmail(to)) throw new Error('Invalid contact email');
     const operationKey = this.operationKey_(opp, 'application');
-    const stored = this.draftById_(opp.draft_id);
+    const stored = this.draftById_(opp.draft_id) || this.draftByKey_(operationKey);
     if (stored) return stored.getId();
 
     const subject = '[JHA:' + operationKey + '] Application: ' + opp.role + ' - ' + cand.name;

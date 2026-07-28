@@ -747,3 +747,31 @@ test('onSheetEdit reports actionable failures to Alerts and rethrows them', () =
   assert.equal(alerts.length, 1);
   assert.equal(alerts[0][0], 'onSheetEdit');
 });
+
+test('diagnose reports an entry-point failure to Alerts before rethrowing', () => {
+  const alerts = [];
+  const { diagnose } = loadGs(resolve(ROOT, 'src/Diagnostics.gs'), {
+    globals: {
+      PropertiesService: { getScriptProperties: () => { throw new Error('properties unavailable'); } },
+      Alerts: { notify: (...args) => alerts.push(args) },
+      Logger: { log: () => {} }
+    }, names: ['diagnose']
+  });
+  assert.throws(() => diagnose(), /properties unavailable/);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0][0], 'diagnose');
+});
+
+test('pruneDeadLinks runs behind the shared lock and alerts on failure', () => {
+  const events = [];
+  const { pruneDeadLinks } = loadGs(resolve(ROOT, 'src/Diagnostics.gs'), {
+    globals: {
+      Runtime: { withScriptLock: (name, wait, fn) => { events.push(['lock', name, wait]); return fn(); } },
+      Crm: { ensureSchema: () => { throw new Error('maintenance unavailable'); } },
+      Alerts: { notify: (...args) => events.push(['alert', ...args]) },
+      Logger: { log: () => {} }
+    }, names: ['pruneDeadLinks']
+  });
+  assert.throws(() => pruneDeadLinks(), /maintenance unavailable/);
+  assert.deepEqual(events.map((event) => event[0]), ['lock', 'alert']);
+});

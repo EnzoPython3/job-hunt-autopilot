@@ -575,3 +575,70 @@ test('Loop trigger workers enforce a deadline, cap work, and alert one aggregate
   assert.equal(alerts.length, 1);
   assert.match(String(alerts[0][1]), /follow-up failed/);
 });
+
+test('followUps claims each opportunity and releases its token after drafting', () => {
+  const events = [];
+  const { followUps } = loadGs(resolve(ROOT, 'src/Loop.gs'), {
+    globals: {
+      Crm: {
+        TABS: { OPPORTUNITIES: 'Opportunities' }, ensureSchema: () => {},
+        readAll: () => [{ _row: 2, id: 'opp-follow', status: 'sent', contact_email: 'person@example.test', response: '', applied_date: new Date(Date.now() - 4 * 86400000), notes: '' }],
+        claim: (...args) => { events.push(['claim', ...args]); return 'follow-token'; },
+        releaseClaim: (...args) => events.push(['release', ...args])
+      },
+      Config: { tunable: () => 1, defaults: { FOLLOWUP_DAYS: [3, 7] } },
+      Runtime: { withScriptLock: (_name, _wait, fn) => fn(), boundedBatch: (value) => value, deadlineMs: () => Date.now() + 10000, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error) }) },
+      Outreach: { draftFollowUp: (...args) => { events.push(['draft', ...args]); return 'draft-1'; } },
+      Alerts: { notify: () => {} }, Logger: { log: () => {} }
+    }, names: ['followUps']
+  });
+  assert.equal(followUps(), 1);
+  assert.deepEqual(events.map((event) => event[0]), ['claim', 'draft', 'release']);
+  assert.equal(events[0][2], 'opp-follow');
+  assert.equal(events[2][3], 'follow-token');
+});
+
+test('prepInterviews claims each opportunity and releases its token after generation', () => {
+  const events = [];
+  const { prepInterviews } = loadGs(resolve(ROOT, 'src/Loop.gs'), {
+    globals: {
+      Crm: {
+        TABS: { OPPORTUNITIES: 'Opportunities' }, ensureSchema: () => {},
+        readAll: () => [{ _row: 2, id: 'opp-interview', status: 'interview', notes: '' }],
+        claim: (...args) => { events.push(['claim', ...args]); return 'interview-token'; },
+        releaseClaim: (...args) => events.push(['release', ...args])
+      },
+      Config: { tunable: () => 1 },
+      Runtime: { withScriptLock: (_name, _wait, fn) => fn(), boundedBatch: (value) => value, deadlineMs: () => Date.now() + 10000, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error) }) },
+      InterviewPrep: { generateFor: (...args) => { events.push(['generate', ...args]); return { docId: 'doc-1' }; } },
+      Alerts: { notify: () => {} }, Logger: { log: () => {} }
+    }, names: ['prepInterviews']
+  });
+  assert.equal(prepInterviews(), 1);
+  assert.deepEqual(events.map((event) => event[0]), ['claim', 'generate', 'release']);
+  assert.equal(events[2][3], 'interview-token');
+});
+
+test('agency outreach claims each contact and releases its token after draft persistence', () => {
+  const events = [];
+  const { Outreach } = loadGs(resolve(ROOT, 'src/Outreach.gs'), {
+    globals: {
+      Config: { tunable: () => 1, promptCandidate: () => ({ name: 'A' }) },
+      Validation: { isEmail: () => true }, Prompts: { render: () => 'prompt' }, Gemini: { generate: () => 'body' },
+      Crm: {
+        TABS: { CONTACTS: 'Contacts' },
+        readAll: () => [{ _row: 2, id: 'contact-agency', type: 'agency', email: 'agency@example.test', name: 'Agency' }],
+        claim: (...args) => { events.push(['claim', ...args]); return 'agency-token'; },
+        releaseClaim: (...args) => events.push(['release', ...args]),
+        updateRow: (...args) => events.push(['update', ...args])
+      },
+      Runtime: { boundedBatch: (value) => value, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error) }) },
+      GmailApp: { getDraft: () => null, getDrafts: () => [], createDraft: () => ({ getId: () => 'agency-draft' }) }
+    }, names: ['Outreach']
+  });
+  const result = Outreach.draftAgencyOutreach(1, Date.now() + 10000);
+  assert.equal(result.created, 1);
+  assert.deepEqual(events.map((event) => event[0]), ['claim', 'update', 'release']);
+  assert.equal(events[0][2], 'contact-agency');
+  assert.equal(events[2][3], 'agency-token');
+});

@@ -67,5 +67,23 @@ Goal: help book **2-5 interviews/week**.
   `clasp` push `src/`, set Script Properties, run `setupProject()`, then `installTriggers()`.
   Rebuild the paste bundle after editing `src/` with `bash tools/bundle.sh`.
 
+## Updating
+Already set up and want the latest fixes? Your API keys, profile, filters, and CRM Sheet
+all live outside git (Script Properties + your own Sheet), so updating the code never
+touches them - safe whether you're mid-setup or fully running.
+
+- **Non-technical (pasted the bundle):** get the latest `manual-install/Code.gs` (a new
+  dated zip from wherever you got this one, or the raw file on GitHub), open
+  script.google.com, select all the code in your `Code.gs` file, delete it, paste the new
+  version in, save.
+- **Technical (clasp):** `git pull origin main`, then `clasp push` from the repo root.
+
+Either way, after updating: re-run **`seedSetupTab`** from the function dropdown once. New
+Setup-tab fields (like the ALERTS section) only get added when that runs - it preserves
+every answer you've already typed, so this is safe to re-run any time. If you'd previously
+set `GEMINI_MODEL` as a Script Property to work around a retired model, that override still
+wins after updating - clear it (Project Settings > Script Properties, or blank it via the
+Setup tab if it's listed there) to pick up the new default.
+
 ## Licence
 [MIT](LICENSE). Use it, fork it, adapt it. Contributions welcome.

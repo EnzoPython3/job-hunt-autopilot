@@ -158,7 +158,12 @@ The sheet's **Readme** tab has this same guide, always one click away.
 
 ## If something looks wrong
 In the script tab, run **`diagnose`** and read the log - it checks each key and each job
-source and tells you what's missing.
+source and tells you what's missing. If you've set an alert email (Part 4), a failure also
+emails you directly.
+
+## Already set up and want the latest fixes?
+See **[Updating](README.md#updating)** in the README - short version: your keys, profile,
+and Sheet data are untouched by a code update, so it's always safe to grab the latest.
 
 ---
 

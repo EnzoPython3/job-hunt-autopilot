@@ -69,6 +69,7 @@ test('make-release rejects a tracked release secret in a disposable repository',
   const fixture = mkdtempSync(join(tmpdir(), 'job-hunt-release-fixture-'));
   try {
     cpSync(ROOT, fixture, { recursive: true, filter: (source) => !source.includes('/.git') });
+    rmSync(join(fixture, '.git'), { recursive: true, force: true });
     execFileSync('git', ['init', '-q'], { cwd: fixture });
     execFileSync('git', ['config', 'user.email', 'release-test@example.test'], { cwd: fixture });
     execFileSync('git', ['config', 'user.name', 'Release Test'], { cwd: fixture });

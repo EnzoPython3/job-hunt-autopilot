@@ -22,6 +22,21 @@ test('safeHttpsUrl accepts and normalises HTTPS URLs', () => {
   assert.equal(Validation.safeHttpsUrl('https://jobs.example.test/path?q=a%20b'), 'https://jobs.example.test/path?q=a%20b');
   assert.equal(Validation.safeHttpsUrl('https://[2001:db8::1]/jobs'), 'https://[2001:db8::1]/jobs');
   assert.equal(Validation.safeHttpsUrl('https://[::1]:443/jobs'), 'https://[::1]/jobs');
+  assert.equal(Validation.safeHttpsUrl('https://[::ffff:192.0.2.128]/'), 'https://[::ffff:192.0.2.128]/');
+});
+
+test('safeHttpsUrl rejects invalid dotted IPv4 authorities and IPv4-embedded IPv6 octets', () => {
+  for (const value of [
+    'https://999.999.999.999/',
+    'https://256.1.1.1/',
+    'https://192.0.2.256/',
+    'https://192.0.2.1.4/',
+    'https://[::ffff:999.0.2.128]/',
+    'https://[::ffff:192.0.2.999]/',
+    'https://[::ffff:192.0.2.1.4]/'
+  ]) {
+    assert.equal(Validation.safeHttpsUrl(value), '', `expected rejection for ${value}`);
+  }
 });
 
 test('safeHttpsUrl rejects malformed bracketed IPv6 hosts', () => {

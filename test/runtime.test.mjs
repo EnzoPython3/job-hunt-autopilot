@@ -403,7 +403,7 @@ test('Tailor reuses a stored CV and cover artefact without calling Gemini or cre
     globals: {
       Config: { KEYS: { MASTER_CV_DOC_ID: 'MASTER_CV_DOC_ID' }, require: () => 'config', promptCandidate: () => ({ firstName: 'A', name: 'A' }) },
       Gemini: { generate: () => { geminiCalls++; throw new Error('must not regenerate'); } },
-      Crm: { updateRow: (...args) => updates.push(args) },
+      Crm: { TABS: { OPPORTUNITIES: 'Opportunities' }, updateRow: (...args) => updates.push(args) },
       DriveApp: {
         getFileById: (id) => files[id] || (() => { copyCalls++; throw new Error('unexpected file lookup'); })()
       }
@@ -429,7 +429,7 @@ test('Tailor persists a CV ID immediately so a later failure cannot create a sec
       Config: { KEYS: { MASTER_CV_DOC_ID: 'MASTER_CV_DOC_ID', DRIVE_FOLDER_ID: 'DRIVE_FOLDER_ID' }, require: (key) => key === 'MASTER_CV_DOC_ID' ? 'master' : 'folder', promptCandidate: () => ({ firstName: 'A', name: 'A' }) },
       Gemini: { generate: () => 'summary' },
       Prompts: { render: () => 'prompt' },
-      Crm: { updateRow: (...args) => updates.push(args) },
+      Crm: { TABS: { OPPORTUNITIES: 'Opportunities' }, updateRow: (...args) => updates.push(args) },
       DriveApp: {
         getFileById: (id) => id === 'master' ? { makeCopy: () => copy } : ({ getAs: () => ({}) }),
       },
@@ -453,7 +453,7 @@ test('Outreach validates contact email, reuses stored drafts, and remains draft-
       Validation: { isEmail: (value) => value === 'person@example.test' },
       Prompts: { render: () => 'prompt' },
       Gemini: { generate: () => 'body' },
-      Crm: { updateRow: (...args) => updates.push(args) },
+      Crm: { TABS: { OPPORTUNITIES: 'Opportunities' }, updateRow: (...args) => updates.push(args) },
       GmailApp: {
         getDraft: (id) => ({ getId: () => id }),
         createDraft: () => { createCalls++; return { getId: () => 'new-draft' }; }
@@ -522,7 +522,7 @@ test('Loop trigger workers enforce a deadline, cap work, and alert one aggregate
         readAll: () => [{ _row: 2, id: 'opp-7', status: 'sent', contact_email: 'person@example.test', response: '', applied_date: new Date(Date.now() - 4 * 86400000), notes: '' }],
       },
       Config: { tunable: () => 1, defaults: { FOLLOWUP_DAYS: [3, 7] } },
-      Runtime: { withScriptLock: (_name, _wait, fn) => fn(), deadlineMs: () => 0, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error) }) },
+      Runtime: { withScriptLock: (_name, _wait, fn) => fn(), boundedBatch: (value) => value, deadlineMs: () => 0, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error) }) },
       Outreach: { draftFollowUp: () => { throw new Error('follow-up failed'); } },
       Alerts: { notify: (...args) => alerts.push(args) },
       Logger: { log: () => {} }

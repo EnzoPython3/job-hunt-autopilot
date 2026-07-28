@@ -1320,42 +1320,72 @@ const Match = {
  * ATS-clean PDF into the Drive folder. Cover letter: a fresh Doc -> PDF.
  */
 const Tailor = {
+  operationKey_(opp, operation) {
+    const id = String(opp && opp.id || '').trim();
+    if (!id) throw new Error('Stable opportunity ID is required for ' + operation);
+    return id.replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 120) + ':' + String(operation || '').replace(/[^A-Za-z0-9._:-]/g, '_');
+  },
+
+  storedFile_(id) {
+    if (!id) return null;
+    try {
+      const file = DriveApp.getFileById(String(id));
+      return { docUrl: file.getUrl(), pdfUrl: file.getUrl(), pdfId: String(id) };
+    } catch (e) {
+      return null;
+    }
+  },
+
+  persist_(opp, values) {
+    if (typeof Crm !== 'undefined' && Crm.updateRow && opp && opp._row) {
+      Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, values);
+    }
+  },
+
   tailorCv(opp) {
+    const existing = this.storedFile_(opp && opp.cv_file_id);
+    if (existing) return existing;
     const masterId = Config.require(Config.KEYS.MASTER_CV_DOC_ID);
     const folder = this.folderForOpp_(opp);
     const cand = Config.promptCandidate();
+    const operationKey = this.operationKey_(opp, 'cv');
 
     const summary = Gemini.generate(Prompts.render('cv_tailor', {
       candidate: JSON.stringify(cand),
       job: JSON.stringify({ company: opp.company, role: opp.role })
     }), { temperature: 0.4, maxOutputTokens: 400 }).trim();
 
-    const baseName = 'CV - ' + cand.firstName + ' - ' + this.safe_(opp.company) + ' - ' + this.safe_(opp.role);
+    const baseName = 'CV - ' + cand.firstName + ' - ' + this.safe_(opp.company) + ' - ' + this.safe_(opp.role) + ' [' + operationKey + ']';
     const copyFile = DriveApp.getFileById(masterId).makeCopy(baseName, folder);
     const doc = DocumentApp.openById(copyFile.getId());
     doc.getBody().replaceText('\\{\\{SUMMARY\\}\\}', summary);
     doc.saveAndClose();
 
     const pdf = folder.createFile(DriveApp.getFileById(copyFile.getId()).getAs('application/pdf')).setName(baseName + '.pdf');
+    this.persist_(opp, { cv_file_id: pdf.getId(), cv_pdf_url: pdf.getUrl(), failure_message: '' });
     return { docUrl: copyFile.getUrl(), pdfUrl: pdf.getUrl(), pdfId: pdf.getId(), summary: summary };
   },
 
   coverLetter(opp) {
+    const existing = this.storedFile_(opp && opp.cover_file_id);
+    if (existing) return existing;
     const folder = this.folderForOpp_(opp);
     const cand = Config.promptCandidate();
+    const operationKey = this.operationKey_(opp, 'cover');
 
     const text = Gemini.generate(Prompts.render('cover_letter', {
       candidate: JSON.stringify(cand),
       job: JSON.stringify({ company: opp.company, role: opp.role, location: opp.location })
     }), { temperature: 0.5, maxOutputTokens: 700 }).trim();
 
-    const name = 'Cover - ' + cand.firstName + ' - ' + this.safe_(opp.company) + ' - ' + this.safe_(opp.role);
+    const name = 'Cover - ' + cand.firstName + ' - ' + this.safe_(opp.company) + ' - ' + this.safe_(opp.role) + ' [' + operationKey + ']';
     const doc = DocumentApp.create(name);
     doc.getBody().setText(text);
     doc.saveAndClose();
     const file = DriveApp.getFileById(doc.getId());
     file.moveTo(folder);
     const pdf = folder.createFile(file.getAs('application/pdf')).setName(name + '.pdf');
+    this.persist_(opp, { cover_file_id: pdf.getId(), cover_url: pdf.getUrl(), failure_message: '' });
     return { docUrl: file.getUrl(), pdfUrl: pdf.getUrl(), pdfId: pdf.getId(), text: text };
   },
 
@@ -1523,12 +1553,43 @@ function masterCvContent_() {
  *  - draftAgencyOutreach(): intro emails to the curated recruitment-agency list.
  */
 const Outreach = {
+  operationKey_(opp, operation) {
+    const id = String(opp && (opp.id || opp.contact_id) || '').trim();
+    if (!id) throw new Error('Stable CRM ID is required for ' + operation);
+    return id.replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 120) + ':' + String(operation || '').replace(/[^A-Za-z0-9._:-]/g, '_');
+  },
+
+  draftById_(id) {
+    if (!id || typeof GmailApp.getDraft !== 'function') return null;
+    try { return GmailApp.getDraft(String(id)); } catch (e) { return null; }
+  },
+
+  draftByKey_(key) {
+    if (!key || typeof GmailApp.getDrafts !== 'function') return null;
+    const drafts = GmailApp.getDrafts();
+    for (let i = 0; i < drafts.length; i++) {
+      try {
+        const message = drafts[i].getMessage();
+        if (message && String(message.getSubject() || '').indexOf('[JHA:' + key + ']') !== -1) return drafts[i];
+      } catch (e) { /* ignore an inaccessible draft and continue */ }
+    }
+    return null;
+  },
+
+  persist_(tab, row, values) {
+    if (typeof Crm !== 'undefined' && Crm.updateRow && row && row._row) Crm.updateRow(tab, row._row, values);
+  },
+
   draftFor(opp, assets) {
     const cand = Config.promptCandidate();
     const to = opp.contact_email;
     if (!to) return null;
+    if (typeof Validation === 'undefined' || !Validation.isEmail(to)) throw new Error('Invalid contact email');
+    const operationKey = this.operationKey_(opp, 'application');
+    const stored = this.draftById_(opp.draft_id);
+    if (stored) return stored.getId();
 
-    const subject = 'Application: ' + opp.role + ' - ' + cand.name;
+    const subject = '[JHA:' + operationKey + '] Application: ' + opp.role + ' - ' + cand.name;
     const body = Gemini.generate(Prompts.render('outreach', {
       candidate: JSON.stringify(cand),
       job: JSON.stringify({ company: opp.company, role: opp.role })
@@ -1538,39 +1599,64 @@ const Outreach = {
       name: cand.name,
       attachments: (assets && assets.attachments) || []
     });
-    return draft.getId();
+    const draftId = draft.getId();
+    this.persist_(Crm.TABS.OPPORTUNITIES, opp, { draft_id: draftId, outreach_draft_url: 'gmail-draft:' + draftId, failure_message: '' });
+    return draftId;
   },
 
-  draftAgencyOutreach(limit) {
-    limit = limit || Config.tunable('AGENCY_DRAFTS_PER_RUN');
+  draftAgencyOutreach(limit, deadline) {
+    limit = typeof Runtime !== 'undefined' ? Runtime.boundedBatch(limit || Config.tunable('AGENCY_DRAFTS_PER_RUN'), 10, 10) : Math.min(Number(limit || 10), 10);
     const cand = Config.promptCandidate();
     const agencies = Crm.readAll(Crm.TABS.CONTACTS).filter(function (c) {
       return c.type === 'agency' && c.email && !c.last_contacted;
     });
     let n = 0;
-    agencies.slice(0, limit).forEach(function (a) {
-      const body = Gemini.generate(Prompts.render('outreach', {
-        candidate: JSON.stringify(cand),
-        job: JSON.stringify({ company: a.name, role: 'Customer Service / Client Support / Admin - candidate introduction' })
-      }), { temperature: 0.5, maxOutputTokens: 500 }).trim();
-      GmailApp.createDraft(a.email, 'Candidate available - Customer Service / Client Support', body, { name: cand.name });
-      Crm.updateRow(Crm.TABS.CONTACTS, a._row, { last_contacted: new Date() });
-      n++;
-    });
-    return n;
+    const failures = [];
+    for (let i = 0; i < agencies.length && n < limit; i++) {
+      const a = agencies[i];
+      if (typeof Runtime !== 'undefined' && deadline && Runtime.shouldStop(deadline)) break;
+      try {
+        if (typeof Validation === 'undefined' || !Validation.isEmail(a.email)) throw new Error('Invalid agency contact email');
+        const operationKey = this.operationKey_(a, 'agency');
+        let draft = this.draftById_(a.draft_id) || this.draftByKey_(operationKey);
+        if (!draft) {
+          const body = Gemini.generate(Prompts.render('outreach', {
+            candidate: JSON.stringify(cand),
+            job: JSON.stringify({ company: a.name, role: 'Customer Service / Client Support / Admin - candidate introduction' })
+          }), { temperature: 0.5, maxOutputTokens: 500 }).trim();
+          draft = GmailApp.createDraft(a.email, '[JHA:' + operationKey + '] Candidate available - Customer Service / Client Support', body, { name: cand.name });
+        }
+        const draftId = draft.getId();
+        this.persist_(Crm.TABS.CONTACTS, a, { draft_id: draftId, last_contacted: new Date(), failure_message: '' });
+        n++;
+      } catch (e) { failures.push(Runtime.failure('agency:' + String(a.id || a._row), e)); }
+    }
+    return { created: n, failures: failures };
   },
 
   // Draft a follow-up email (Gmail draft) for a sent application with no response yet.
   draftFollowUp(opp, stageLabel) {
     const cand = Config.promptCandidate();
     if (!opp.contact_email) return null;
+    if (typeof Validation === 'undefined' || !Validation.isEmail(opp.contact_email)) throw new Error('Invalid contact email');
+    const marker = String(stageLabel || '').toLowerCase().indexOf('week') !== -1 ? '[fu7]' : '[fu3]';
+    const notes = String(opp.notes || '');
+    if (notes.indexOf(marker) !== -1) return null;
+    const operationKey = this.operationKey_(opp, 'followup:' + marker.slice(3, -1));
+    const existing = this.draftByKey_(operationKey);
+    if (existing) {
+      this.persist_(Crm.TABS.OPPORTUNITIES, opp, { notes: (notes + ' ' + marker + ' ' + existing.getId()).trim(), updated_at: new Date() });
+      return existing.getId();
+    }
     const body = Gemini.generate(Prompts.render('followup', {
       stage: stageLabel,
       candidate: JSON.stringify(cand),
       job: JSON.stringify({ company: opp.company, role: opp.role })
     }), { temperature: 0.5, maxOutputTokens: 400 }).trim();
-    const subject = 'Following up: ' + opp.role + ' - ' + cand.name;
-    return GmailApp.createDraft(opp.contact_email, subject, body, { name: cand.name }).getId();
+    const subject = '[JHA:' + operationKey + '] Following up: ' + opp.role + ' - ' + cand.name;
+    const draftId = GmailApp.createDraft(opp.contact_email, subject, body, { name: cand.name }).getId();
+    this.persist_(Crm.TABS.OPPORTUNITIES, opp, { notes: (notes + ' ' + marker + ' ' + draftId).trim(), updated_at: new Date() });
+    return draftId;
   },
 
   // Best-effort extraction of an application email from posting text. Skips
@@ -1687,6 +1773,17 @@ function htmlEscape_(s) {
  */
 const InterviewPrep = {
   generateFor(opp) {
+    const stableId = String(opp && opp.id || '').trim();
+    if (!stableId) throw new Error('Stable opportunity ID is required for interview preparation');
+    const markerPrefix = '[interview:' + stableId + ':interview:';
+    const notes = String(opp.notes || '');
+    const markerStart = notes.indexOf(markerPrefix);
+    if (markerStart !== -1) {
+      const markerEnd = notes.indexOf(']', markerStart);
+      const marker = markerEnd === -1 ? notes.slice(markerStart) : notes.slice(markerStart, markerEnd + 1);
+      const parts = marker.slice(markerPrefix.length, -1).split(':');
+      if (parts.length >= 2 && parts[0]) return { docId: parts[0], docUrl: parts.slice(1).join(':') };
+    }
     const folder = Tailor.folderForOpp_(opp);
     const cand = Config.promptCandidate();
 
@@ -1695,13 +1792,21 @@ const InterviewPrep = {
       job: JSON.stringify({ company: opp.company, role: opp.role, location: opp.location })
     }), { temperature: 0.4, maxOutputTokens: 1400 }).trim();
 
-    const name = 'Interview Prep - ' + cand.firstName + ' - ' + Tailor.safe_(opp.company) + ' - ' + Tailor.safe_(opp.role);
+    const operationKey = stableId + ':interview';
+    const name = 'Interview Prep - ' + cand.firstName + ' - ' + Tailor.safe_(opp.company) + ' - ' + Tailor.safe_(opp.role) + ' [' + operationKey + ']';
     const doc = DocumentApp.create(name);
     doc.getBody().setText(text);
     doc.saveAndClose();
     const file = DriveApp.getFileById(doc.getId());
+    const docUrl = file.getUrl();
+    if (typeof Crm !== 'undefined' && Crm.updateRow && opp._row) {
+      Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
+        notes: (notes + ' [interview:' + operationKey + ':' + doc.getId() + ':' + docUrl + ']').trim(),
+        failure_message: ''
+      });
+    }
     file.moveTo(folder);
-    return { docUrl: file.getUrl() };
+    return { docId: doc.getId(), docUrl: docUrl };
   }
 };
 
@@ -1830,56 +1935,74 @@ function scoreQueue() {
  */
 function prepApprovedBatch() {
   try {
-    Crm.ensureSchema();
-    const approvals = Crm.readAll(Crm.TABS.APPROVALS).filter(function (a) {
-      return String(a.decision).trim().toLowerCase() === 'approve';
-    });
+    return Runtime.withScriptLock('prepApprovedBatch', 5000, function () {
+      Crm.ensureSchema();
+      const approvals = Crm.readAll(Crm.TABS.APPROVALS).filter(function (a) {
+        return String(a.decision).trim().toLowerCase() === 'approve';
+      });
 
-    let done = 0;
-    const cap = Config.tunable('CHUNK_SIZE');
-    for (let i = 0; i < approvals.length && done < cap; i++) {
-      const a = approvals[i];
-      const opp = Crm.findOpportunity(a.id);
-      if (!opp) continue;
-      if (['drafted', 'submitted', 'sent'].indexOf(opp.status) !== -1) continue;
-
-      // Portal-only roles (no contact email): tailor a CV + cover only if the
-      // TAILOR_FOR_PORTALS setting is on. Otherwise flag for manual application.
-      if (!opp.contact_email && !Config.tailorForPortals()) {
-        Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
-          status: 'drafted',
-          notes: 'Portal role - apply manually via the job link (tailored docs skipped by setting).',
-          updated_at: new Date()
-        });
-        done++;
-        continue;
-      }
-
-      try {
-        const cv = Tailor.tailorCv(opp);
-        const cover = Tailor.coverLetter(opp);
-
-        let outreachRef = '';
-        let note = 'Ready. Submit via the job link.';
-        if (opp.contact_email) {
-          const cvBlob = DriveApp.getFileById(cv.pdfId).getBlob();
-          const draftId = Outreach.draftFor(opp, { attachments: [cvBlob] });
-          outreachRef = draftId ? ('gmail-draft:' + draftId) : '';
-          note = 'Gmail draft created (review + send).';
-        } else {
-          note = 'Portal role - submit manually via the job link with the tailored CV + cover.';
+      let done = 0;
+      const failures = [];
+      const cap = Runtime.boundedBatch(Config.tunable('CHUNK_SIZE'), 25, 25);
+      const deadline = Runtime.deadlineMs(270000);
+      for (let i = 0; i < approvals.length && done < cap && !Runtime.shouldStop(deadline); i++) {
+        const a = approvals[i];
+        const opp = Crm.findOpportunity(a.id);
+        if (!opp) continue;
+        if (['drafted', 'submitted', 'sent'].indexOf(opp.status) !== -1) continue;
+        let claimToken = '';
+        let claimed = true;
+        if (Crm.claim) {
+          const claim = Crm.claim(Crm.TABS.OPPORTUNITIES, opp.id);
+          claimed = claim !== false;
+          claimToken = typeof claim === 'string' ? claim : '';
         }
+        if (!claimed) continue;
 
-        Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
-          cv_pdf_url: cv.pdfUrl, cover_url: cover.pdfUrl, outreach_draft_url: outreachRef,
-          status: 'drafted', notes: note, updated_at: new Date()
-        });
-        done++;
-      } catch (e) {
-        Logger.log('prep ' + a.id + ': ' + e);
+        try {
+          // Portal-only roles (no contact email): tailor a CV + cover only if the
+          // TAILOR_FOR_PORTALS setting is on. Otherwise flag for manual application.
+          if (!opp.contact_email && !Config.tailorForPortals()) {
+            Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
+              status: 'drafted',
+              notes: 'Portal role - apply manually via the job link (tailored docs skipped by setting).',
+              updated_at: new Date()
+            });
+            done++;
+            continue;
+          }
+
+          const cv = Tailor.tailorCv(opp);
+          const cover = Tailor.coverLetter(opp);
+
+          let outreachRef = '';
+          let note = 'Ready. Submit via the job link.';
+          if (opp.contact_email) {
+            const cvBlob = DriveApp.getFileById(cv.pdfId).getBlob();
+            const draftId = Outreach.draftFor(opp, { attachments: [cvBlob] });
+            outreachRef = draftId ? ('gmail-draft:' + draftId) : '';
+            note = 'Gmail draft created (review + send).';
+          } else {
+            note = 'Portal role - submit manually via the job link with the tailored CV + cover.';
+          }
+
+          Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
+            cv_pdf_url: cv.pdfUrl, cover_url: cover.pdfUrl, outreach_draft_url: outreachRef,
+            status: 'drafted', notes: note, updated_at: new Date(), failure_message: ''
+          });
+          done++;
+        } catch (e) {
+          const failure = Runtime.failure('prep:' + a.id, e);
+          failures.push(failure);
+          if (Crm.recordOpportunityFailure) Crm.recordOpportunityFailure(opp._row, failure.message);
+        } finally {
+          if (claimToken && Crm.releaseClaim) Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, opp.id, claimToken);
+        }
       }
-    }
-    Logger.log('prepApprovedBatch: prepared ' + done);
+      Logger.log('prepApprovedBatch: prepared ' + done);
+      if (failures.length) throw new Error('prepApprovedBatch failures: ' + failures.map(function (f) { return f.name + ': ' + f.message; }).join('; '));
+      return done;
+    });
   } catch (e) {
     Alerts.notify('prepApprovedBatch', e);
     throw e;
@@ -1892,32 +2015,31 @@ function prepApprovedBatch() {
  */
 function followUps() {
   try {
-    Crm.ensureSchema();
-    const days = Config.defaults.FOLLOWUP_DAYS; // [3, 7]
-    const now = new Date();
-    const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
-      return (o.status === 'sent' || o.status === 'submitted') && o.contact_email && !o.response;
+    return Runtime.withScriptLock('followUps', 5000, function () {
+      Crm.ensureSchema();
+      const days = Config.defaults.FOLLOWUP_DAYS;
+      const now = new Date();
+      const deadline = Runtime.deadlineMs(270000);
+      const cap = Runtime.boundedBatch(Config.tunable('CHUNK_SIZE'), 25, 25);
+      const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
+        return (o.status === 'sent' || o.status === 'submitted') && o.contact_email && !o.response;
+      });
+      let n = 0;
+      const failures = [];
+      for (let i = 0; i < rows.length && n < cap && !Runtime.shouldStop(deadline); i++) {
+        const o = rows[i];
+        const applied = o.applied_date ? new Date(o.applied_date) : null;
+        if (!applied || isNaN(applied.getTime())) continue;
+        const ageDays = (now - applied) / 86400000;
+        try {
+          const draftId = ageDays >= days[1] ? Outreach.draftFollowUp(o, 'a week') : ageDays >= days[0] ? Outreach.draftFollowUp(o, 'a few days') : null;
+          if (draftId) n++;
+        } catch (e) { failures.push(Runtime.failure('followUp:' + o.id, e)); }
+      }
+      Logger.log('followUps: drafted ' + n + ' follow-up(s)');
+      if (failures.length) throw new Error('followUps failures: ' + failures.map(function (f) { return f.name + ': ' + f.message; }).join('; '));
+      return n;
     });
-
-    let n = 0;
-    rows.forEach(function (o) {
-      const applied = o.applied_date ? new Date(o.applied_date) : null;
-      if (!applied || isNaN(applied.getTime())) return;
-      const ageDays = (now - applied) / 86400000;
-      const notes = String(o.notes || '');
-      try {
-        if (ageDays >= days[1] && notes.indexOf('[fu7]') === -1) {
-          Outreach.draftFollowUp(o, 'a week');
-          Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, { notes: (notes + ' [fu7]').trim(), updated_at: now });
-          n++;
-        } else if (ageDays >= days[0] && notes.indexOf('[fu3]') === -1) {
-          Outreach.draftFollowUp(o, 'a few days');
-          Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, { notes: (notes + ' [fu3]').trim(), updated_at: now });
-          n++;
-        }
-      } catch (e) { Logger.log('followUp ' + o.id + ': ' + e); }
-    });
-    Logger.log('followUps: drafted ' + n + ' follow-up(s)');
   } catch (e) {
     Alerts.notify('followUps', e);
     throw e;
@@ -1930,23 +2052,26 @@ function followUps() {
  */
 function prepInterviews() {
   try {
-    Crm.ensureSchema();
-    const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
-      return o.status === 'interview' && String(o.notes || '').indexOf('[prepped]') === -1;
+    return Runtime.withScriptLock('prepInterviews', 5000, function () {
+      Crm.ensureSchema();
+      const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
+        return o.status === 'interview' && String(o.notes || '').indexOf('[interview:') === -1;
+      });
+      let n = 0;
+      const failures = [];
+      const cap = Runtime.boundedBatch(Config.tunable('CHUNK_SIZE'), 25, 25);
+      const deadline = Runtime.deadlineMs(270000);
+      for (let i = 0; i < rows.length && n < cap && !Runtime.shouldStop(deadline); i++) {
+        const o = rows[i];
+        try {
+          InterviewPrep.generateFor(o);
+          n++;
+        } catch (e) { failures.push(Runtime.failure('interview:' + o.id, e)); }
+      }
+      Logger.log('prepInterviews: generated ' + n + ' prep pack(s)');
+      if (failures.length) throw new Error('prepInterviews failures: ' + failures.map(function (f) { return f.name + ': ' + f.message; }).join('; '));
+      return n;
     });
-    let n = 0;
-    const cap = Config.tunable('CHUNK_SIZE');
-    for (let i = 0; i < rows.length && n < cap; i++) {
-      const o = rows[i];
-      try {
-        const r = InterviewPrep.generateFor(o);
-        Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
-          notes: (String(o.notes || '') + ' [prepped] ' + r.docUrl).trim(), updated_at: new Date()
-        });
-        n++;
-      } catch (e) { Logger.log('prepInterviews ' + o.id + ': ' + e); }
-    }
-    Logger.log('prepInterviews: generated ' + n + ' prep pack(s)');
   } catch (e) {
     Alerts.notify('prepInterviews', e);
     throw e;
@@ -1965,9 +2090,18 @@ function weeklyReport() {
 
 // Draft agency intro emails (run manually or on a light schedule).
 function draftAgencyOutreach() {
-  Crm.ensureSchema();
-  const n = Outreach.draftAgencyOutreach(Config.tunable('AGENCY_DRAFTS_PER_RUN'));
-  Logger.log('draftAgencyOutreach: created ' + n + ' agency drafts');
+  try {
+    return Runtime.withScriptLock('draftAgencyOutreach', 5000, function () {
+      Crm.ensureSchema();
+      const result = Outreach.draftAgencyOutreach(Config.tunable('AGENCY_DRAFTS_PER_RUN'), Runtime.deadlineMs(270000));
+      Logger.log('draftAgencyOutreach: created ' + result.created + ' agency drafts');
+      if (result.failures && result.failures.length) throw new Error('draftAgencyOutreach failures: ' + result.failures.map(function (f) { return f.name + ': ' + f.message; }).join('; '));
+      return result.created;
+    });
+  } catch (e) {
+    Alerts.notify('draftAgencyOutreach', e);
+    throw e;
+  }
 }
 
 

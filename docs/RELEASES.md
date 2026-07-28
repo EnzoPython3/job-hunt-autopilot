@@ -28,8 +28,8 @@ the release from the pushed `main`.
    back if a release turns out to have a problem).
 3. Announce the release with the zip filename and version.
 
-For project support, use the repository's issue tracker and documentation rather than a
-personal contact address or social profile.
+For project support, use the repository's [issue tracker](../issues) and
+[documentation](../tree/main/docs) rather than a personal contact address or social profile.
 
 ## Before every release - public-content sweep
 This repo is a public template. Anything sensitive in tracked release content is a bug and

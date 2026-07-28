@@ -131,10 +131,25 @@ function followUps() {
         const applied = o.applied_date ? new Date(o.applied_date) : null;
         if (!applied || isNaN(applied.getTime())) continue;
         const ageDays = (now - applied) / 86400000;
+        const stage = ageDays >= days[1] ? 'a week' : ageDays >= days[0] ? 'a few days' : '';
+        if (!stage) continue;
+        let claimToken = '';
+        if (Crm.claim) {
+          const claim = Crm.claim(Crm.TABS.OPPORTUNITIES, o.id);
+          if (claim === false) continue;
+          claimToken = typeof claim === 'string' ? claim : '';
+        }
         try {
-          const draftId = ageDays >= days[1] ? Outreach.draftFollowUp(o, 'a week') : ageDays >= days[0] ? Outreach.draftFollowUp(o, 'a few days') : null;
+          const draftId = Outreach.draftFollowUp(o, stage);
           if (draftId) n++;
-        } catch (e) { failures.push(Runtime.failure('followUp:' + o.id, e)); }
+        } catch (e) {
+          failures.push(Runtime.failure('followUp:' + o.id, e));
+        } finally {
+          if (claimToken && Crm.releaseClaim) {
+            try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, o.id, claimToken); }
+            catch (releaseError) { failures.push(Runtime.failure('followUp release:' + o.id, releaseError)); }
+          }
+        }
       }
       Logger.log('followUps: drafted ' + n + ' follow-up(s)');
       if (failures.length) throw new Error('followUps failures: ' + failures.map(function (f) { return f.name + ': ' + f.message; }).join('; '));
@@ -163,10 +178,23 @@ function prepInterviews() {
       const deadline = Runtime.deadlineMs(270000);
       for (let i = 0; i < rows.length && n < cap && !Runtime.shouldStop(deadline); i++) {
         const o = rows[i];
+        let claimToken = '';
+        if (Crm.claim) {
+          const claim = Crm.claim(Crm.TABS.OPPORTUNITIES, o.id);
+          if (claim === false) continue;
+          claimToken = typeof claim === 'string' ? claim : '';
+        }
         try {
           InterviewPrep.generateFor(o);
           n++;
-        } catch (e) { failures.push(Runtime.failure('interview:' + o.id, e)); }
+        } catch (e) {
+          failures.push(Runtime.failure('interview:' + o.id, e));
+        } finally {
+          if (claimToken && Crm.releaseClaim) {
+            try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, o.id, claimToken); }
+            catch (releaseError) { failures.push(Runtime.failure('interview release:' + o.id, releaseError)); }
+          }
+        }
       }
       Logger.log('prepInterviews: generated ' + n + ' prep pack(s)');
       if (failures.length) throw new Error('prepInterviews failures: ' + failures.map(function (f) { return f.name + ': ' + f.message; }).join('; '));

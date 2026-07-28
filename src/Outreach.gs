@@ -69,6 +69,12 @@ const Outreach = {
     for (let i = 0; i < agencies.length && n < limit; i++) {
       const a = agencies[i];
       if (typeof Runtime !== 'undefined' && deadline && Runtime.shouldStop(deadline)) break;
+      let claimToken = '';
+      if (Crm.claim) {
+        const claim = Crm.claim(Crm.TABS.CONTACTS, a.id || String(a._row));
+        if (claim === false) continue;
+        claimToken = typeof claim === 'string' ? claim : '';
+      }
       try {
         if (typeof Validation === 'undefined' || !Validation.isEmail(a.email)) throw new Error('Invalid agency contact email');
         const operationKey = this.operationKey_(a, 'agency');
@@ -83,7 +89,14 @@ const Outreach = {
         const draftId = draft.getId();
         this.persist_(Crm.TABS.CONTACTS, a, { draft_id: draftId, last_contacted: new Date(), failure_message: '' });
         n++;
-      } catch (e) { failures.push(Runtime.failure('agency:' + String(a.id || a._row), e)); }
+      } catch (e) {
+        failures.push(Runtime.failure('agency:' + String(a.id || a._row), e));
+      } finally {
+        if (claimToken && Crm.releaseClaim) {
+          try { Crm.releaseClaim(Crm.TABS.CONTACTS, a.id || String(a._row), claimToken); }
+          catch (releaseError) { failures.push(Runtime.failure('agency release:' + String(a.id || a._row), releaseError)); }
+        }
+      }
     }
     return { created: n, failures: failures };
   },

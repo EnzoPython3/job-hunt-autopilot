@@ -609,12 +609,16 @@ const Crm = {
       let sh = ss.getSheetByName(tab);
       if (!sh) sh = ss.insertSheet(tab);
       const headers = self.HEADERS[tab];
-      const firstRow = sh.getRange(1, 1, 1, headers.length).getValues()[0];
+      const width = Math.max(sh.getLastColumn(), 1);
+      const firstRow = sh.getRange(1, 1, 1, width).getValues()[0];
       const empty = firstRow.every(function (c) { return c === '' || c === null; });
       if (empty) {
         sh.getRange(1, 1, 1, headers.length).setValues([headers]);
         sh.setFrozenRows(1);
         sh.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+      } else {
+        const missing = headers.filter(function (header) { return firstRow.indexOf(header) < 0; });
+        if (missing.length) sh.getRange(1, width + 1, 1, missing.length).setValues([missing]);
       }
     });
     const def = ss.getSheetByName('Sheet1');
@@ -637,10 +641,15 @@ const Crm = {
     const last = sh.getLastRow();
     if (last < 2) return [];
     const headers = this.HEADERS[tab];
-    const values = sh.getRange(2, 1, last - 1, headers.length).getValues();
+    const width = Math.max(sh.getLastColumn(), 1);
+    const actualHeaders = sh.getRange(1, 1, 1, width).getValues()[0];
+    const values = sh.getRange(2, 1, last - 1, width).getValues();
     return values.map(function (r, i) {
       const o = { _row: i + 2 };
-      headers.forEach(function (h, c) { o[h] = r[c]; });
+      headers.forEach(function (h) {
+        const c = actualHeaders.indexOf(h);
+        o[h] = c >= 0 && c < r.length ? r[c] : '';
+      });
       return o;
     });
   },

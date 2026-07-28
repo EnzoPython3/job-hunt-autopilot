@@ -676,7 +676,7 @@ test('agency outreach persists a bounded retryable contact failure before aggreg
         claim: () => 'token', releaseClaim: () => {},
         updateRow: (tab, row, values) => updates.push([tab, row, values])
       },
-      Runtime: { boundedBatch: (value) => value, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error.message || error) }) },
+      Runtime: { boundedBatch: (value) => value, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error.message || error).slice(0, 240) }) },
       GmailApp: { getDraft: () => null, getDrafts: () => [], createDraft: () => { throw new Error('provider response ' + 'x'.repeat(500)); } }
     }, names: ['Outreach']
   });

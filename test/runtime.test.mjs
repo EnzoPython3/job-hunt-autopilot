@@ -663,3 +663,87 @@ test('agency outreach does not claim a contact without a stable contact ID', () 
   assert.equal(result.created, 0);
   assert.equal(events.some((event) => event[0] === 'claim'), false);
 });
+
+test('Alerts sanitises secrets, URLs, and oversized response bodies without recursing on delivery failure', () => {
+  const sent = [];
+  const logs = [];
+  const Alerts = loadGs(resolve(ROOT, 'src/Alerts.gs'), {
+    globals: {
+      Config: { get: () => 'alerts@example.test', defaults: { ALERT_EMAIL: 'alerts@example.test' } },
+      MailApp: { sendEmail: (message) => { sent.push(message); throw new Error('mailer failed with https://mail.example.test/token=secret'); } },
+      Logger: { log: (message) => logs.push(String(message)) }
+    },
+    names: ['Alerts']
+  }).Alerts;
+
+  Alerts.notify('dailySource', new Error('HTTP 403 https://api.example.test/path?key=secret body=' + 'x'.repeat(5000)));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].body.includes('secret'), false);
+  assert.equal(sent[0].body.includes('https://api.example.test'), false);
+  assert.ok(sent[0].body.length <= 1200);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].includes('secret'), false);
+  assert.equal(logs[0].includes('https://mail.example.test'), false);
+});
+
+test('dailySource uses the shared lock and alerts before rethrowing trigger failures', () => {
+  const events = [];
+  const { dailySource } = loadGs(resolve(ROOT, 'src/Loop.gs'), {
+    globals: {
+      Runtime: { withScriptLock: (name, wait, fn) => { events.push(['lock', name, wait]); return fn(); } },
+      Crm: { ensureSchema: () => events.push(['schema']) },
+      Config: { tunable: () => 10 },
+      Sources: { ingest: () => { throw new Error('source failed'); } },
+      Alerts: { notify: (...args) => events.push(['alert', ...args]) },
+      Logger: { log: () => {} }
+    },
+    names: ['dailySource']
+  }).dailySource;
+
+  assert.throws(() => dailySource(), /source failed/);
+  assert.deepEqual(events.map((event) => event[0]), ['lock', 'schema', 'alert']);
+  assert.equal(events[0][1], 'dailySource');
+});
+
+test('per-item follow-up and interview failures persist retryable CRM state before aggregate alert', () => {
+  const updates = [];
+  const alerts = [];
+  const base = {
+    TABS: { OPPORTUNITIES: 'Opportunities' },
+    ensureSchema: () => {},
+    readAll: () => [{ _row: 2, id: 'opp-fail', status: 'sent', contact_email: 'person@example.test', response: '', applied_date: new Date(Date.now() - 4 * 86400000), notes: '' }],
+    claim: () => 'token',
+    releaseClaim: () => {},
+    recordOpportunityFailure: (row, message) => updates.push([row, message])
+  };
+  const { followUps } = loadGs(resolve(ROOT, 'src/Loop.gs'), {
+    globals: {
+      Crm: base,
+      Config: { tunable: () => 1, defaults: { FOLLOWUP_DAYS: [3, 7] } },
+      Runtime: { withScriptLock: (_n, _w, fn) => fn(), boundedBatch: (v) => v, deadlineMs: () => Date.now() + 10000, shouldStop: () => false, failure: (_n, e) => ({ name: 'item', message: e.message }) },
+      Outreach: { draftFollowUp: () => { throw new Error('retry follow-up'); } },
+      Alerts: { notify: (...args) => alerts.push(args) }, Logger: { log: () => {} }
+    }, names: ['followUps']
+  }).followUps;
+  assert.throws(() => followUps(), /retry follow-up/);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0][0], 2);
+  assert.equal(alerts.length, 1);
+});
+
+test('onSheetEdit reports actionable failures to Alerts and rethrows them', () => {
+  const alerts = [];
+  const { onSheetEdit } = loadGs(resolve(ROOT, 'src/SheetUi.gs'), {
+    globals: {
+      SETUP_TAB: 'Setup',
+      Crm: { TABS: { OPPORTUNITIES: 'Opportunities' }, colIndex: () => { throw new Error('sheet unavailable'); } },
+      Alerts: { notify: (...args) => alerts.push(args) },
+      Logger: { log: () => {} }
+    }, names: ['onSheetEdit']
+  }).onSheetEdit;
+  const sheet = { getName: () => 'Opportunities' };
+  const range = { getSheet: () => sheet, getNumRows: () => 1, getNumColumns: () => 1, getColumn: () => 2, getRow: () => 2 };
+  assert.throws(() => onSheetEdit({ range, value: 'sent' }), /sheet unavailable/);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0][0], 'onSheetEdit');
+});

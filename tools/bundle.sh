@@ -15,7 +15,7 @@ OUT="$ROOT/manual-install/Code.gs"
 # Load order is cosmetic (Apps Script shares one global scope across files), but
 # keep dependencies-ish first for readability.
 ORDER=(Config Alerts Gemini Prompts Crm Sources Match Tailor MasterCv Outreach Digest \
-       InterviewPrep Report Loop Triggers SheetUi Onboarding Setup Diagnostics)
+       InterviewPrep Report Loop Triggers SheetUi Onboarding Setup Diagnostics Validation)
 
 # Safety net: every src/*.gs must be listed in ORDER, or the bundle would silently
 # drop it.

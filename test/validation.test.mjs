@@ -1,0 +1,151 @@
+import { strict as assert } from 'node:assert';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+import { loadGs } from './helpers/load-gs.mjs';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const { Validation } = loadGs(resolve(ROOT, 'src/Validation.gs'), {
+  globals: { URL },
+  names: ['Validation']
+});
+
+test('safeHttpsUrl accepts and normalises HTTPS URLs', () => {
+  assert.equal(
+    Validation.safeHttpsUrl('  HTTPS://Example.COM:443/jobs/../openings?id=7#apply  '),
+    'https://example.com/openings?id=7#apply'
+  );
+  assert.equal(Validation.safeHttpsUrl('https://jobs.example.test/path?q=a%20b'), 'https://jobs.example.test/path?q=a%20b');
+});
+
+test('safeHttpsUrl rejects unsafe schemes, malformed values, empty values, and credentials', () => {
+  for (const value of [
+    '',
+    '   ',
+    null,
+    undefined,
+    'http://example.com/job',
+    'javascript:alert(1)',
+    'data:text/html,<h1>no</h1>',
+    'file:///etc/passwd',
+    'https://user:pass@example.com/job',
+    'https://user@example.com/job',
+    'https://',
+    'not a URL',
+    'https://example.com/\nredirect'
+  ]) {
+    assert.equal(Validation.safeHttpsUrl(value), '', `expected rejection for ${String(value)}`);
+  }
+});
+
+test('safeHttpsUrl allows only HTTPS redirect targets, including relative targets resolved by the caller', () => {
+  const base = 'https://jobs.example.com/listing/123';
+  const resolveRedirect = (target) => {
+    try {
+      return Validation.safeHttpsUrl(new URL(target, base).toString());
+    } catch {
+      return '';
+    }
+  };
+
+  assert.equal(resolveRedirect('/apply'), 'https://jobs.example.com/apply');
+  assert.equal(resolveRedirect('//careers.example.com/apply'), 'https://careers.example.com/apply');
+  assert.equal(resolveRedirect('http://careers.example.com/apply'), '');
+  assert.equal(resolveRedirect('javascript:alert(1)'), '');
+  assert.equal(resolveRedirect('data:text/html,nope'), '');
+});
+
+test('safeHref returns an HTML-safe href only for a validated HTTPS URL', () => {
+  assert.equal(
+    Validation.safeHref('https://example.com/jobs?a=1&b=2'),
+    'https://example.com/jobs?a=1&amp;b=2'
+  );
+  assert.equal(Validation.safeHref('HTTPS://Example.COM/a/<b>'), 'https://example.com/a/%3Cb%3E');
+  assert.equal(Validation.safeHref('javascript:alert(1)'), '');
+  assert.equal(Validation.safeHref('http://example.com/?next=https://safe.example'), '');
+  assert.equal(Validation.safeHref('https://user:pass@example.com/'), '');
+});
+
+test('isEmail accepts ordinary recipient addresses', () => {
+  for (const value of [
+    'person@example.com',
+    'first.last+jobs@sub.example.co.za',
+    'a_b-c@example.test'
+  ]) {
+    assert.equal(Validation.isEmail(value), true, `expected acceptance for ${value}`);
+  }
+});
+
+test('isEmail rejects control characters, whitespace injection, malformed and unsafe values', () => {
+  for (const value of [
+    '',
+    null,
+    undefined,
+    'person@example.com\nBcc: attacker@example.com',
+    'person@example.com\r\nBcc: attacker@example.com',
+    'person @example.com',
+    'person@example .com',
+    'person@example.com ',
+    'person@example.com,attacker@example.com',
+    'Person <person@example.com>',
+    'person@@example.com',
+    'person@',
+    '@example.com',
+    'person.example.com',
+    'javascript:alert(1)@example.com',
+    'a'.repeat(250) + '@example.com'
+  ]) {
+    assert.equal(Validation.isEmail(value), false, `expected rejection for ${JSON.stringify(value)}`);
+  }
+});
+
+test('requireArray and requireObject accept expected JSON values', () => {
+  const array = ['candidate'];
+  const object = { candidates: array };
+  assert.equal(Validation.requireArray(array, 'candidates'), array);
+  assert.equal(Validation.requireObject(object, 'response'), object);
+});
+
+test('requireArray and requireObject reject unexpected types with bounded labelled errors', () => {
+  assert.throws(() => Validation.requireArray({ huge: 'x'.repeat(10000) }, 'candidates'), (error) => {
+    assert.match(error.message, /^candidates must be an array$/);
+    assert.ok(error.message.length < 100);
+    return true;
+  });
+  assert.throws(() => Validation.requireObject([], 'response'), /response must be an object/);
+  assert.throws(() => Validation.requireObject(null, 'response'), /response must be an object/);
+});
+
+test('validateGeminiTextResponse joins text-bearing parts from a valid envelope', () => {
+  const response = {
+    candidates: [{
+      content: {
+        parts: [{ text: 'First ' }, { inlineData: { mimeType: 'image/png' } }, { text: 'second.' }]
+      }
+    }]
+  };
+  assert.equal(Validation.validateGeminiTextResponse(response), 'First second.');
+});
+
+test('validateGeminiTextResponse rejects malformed envelopes and unexpected types', () => {
+  for (const value of [
+    null,
+    [],
+    'response',
+    {},
+    { candidates: null },
+    { candidates: [] },
+    { candidates: [{}] },
+    { candidates: [{ content: null }] },
+    { candidates: [{ content: { parts: [] } }] },
+    { candidates: [{ content: { parts: [{ inlineData: {} }] } }] },
+    { candidates: [{ content: { parts: [{ text: 42 }] } }] }
+  ]) {
+    assert.throws(
+      () => Validation.validateGeminiTextResponse(value),
+      /Gemini response|candidates|content|parts|text/,
+      `expected malformed envelope rejection for ${JSON.stringify(value)}`
+    );
+  }
+});

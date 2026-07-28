@@ -122,6 +122,35 @@ test('Match limits new approval rows per scoring run', () => {
   assert.equal(updates.length, 2);
 });
 
+test('pruneDeadLinks uses the configured maintenance-check maximum', () => {
+  let checks = 0;
+  const diagnostics = loadGs(resolve(ROOT, 'src/Diagnostics.gs'), {
+    globals: {
+      Config: { tunable: (key) => key === 'MAINTENANCE_CHECKS' ? 2 : undefined },
+      Crm: {
+        TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' },
+        ensureSchema: () => {},
+        readAll: (tab) => tab === 'Opportunities'
+          ? [
+            { _row: 2, id: 'opp-1', url: 'https://example.test/1', status: 'sourced' },
+            { _row: 3, id: 'opp-2', url: 'https://example.test/2', status: 'sourced' },
+            { _row: 4, id: 'opp-3', url: 'https://example.test/3', status: 'sourced' }
+          ]
+          : [],
+        updateRow: () => {}
+      },
+      Sources: { linkAlive_: () => { checks++; return true; } },
+      Logger: { log: () => {} },
+      Alerts: { notify: () => {} }
+    },
+    names: ['pruneDeadLinks']
+  }).pruneDeadLinks;
+
+  const report = diagnostics();
+  assert.equal(checks, 2);
+  assert.match(report, /CAPPED \(hit the 2-check or time budget\)/);
+});
+
 test('Runtime.withScriptLock releases the script lock even when work fails', () => {
   const calls = [];
   const Runtime = loadGs(resolve(ROOT, 'src/Runtime.gs'), {

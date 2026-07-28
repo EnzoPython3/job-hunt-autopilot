@@ -68,7 +68,7 @@ const Config = {
     GEMINI_MODEL: 'gemini-flash-latest',
     SCORE_THRESHOLD: 62,       // minimum fit score (0-100) to queue for approval
     DAILY_SOURCE_CAP: 120,     // max new jobs ingested per day
-    DAILY_APPROVAL_N: 25,      // max items pushed to the Approvals queue per day
+    DAILY_APPROVAL_N: 25,      // max new approval rows created by one scoring run
     CHUNK_SIZE: 8,             // items processed per trigger run (respects the 6-min cap)
     AGENCY_DRAFTS_PER_RUN: 8,  // agency intro drafts created per run
     MAINTENANCE_CHECKS: 80,    // link/maintenance checks per run

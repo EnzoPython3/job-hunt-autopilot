@@ -79,7 +79,7 @@ const Config = {
     GEMINI_MODEL: 'gemini-flash-latest',
     SCORE_THRESHOLD: 62,       // minimum fit score (0-100) to queue for approval
     DAILY_SOURCE_CAP: 120,     // max new jobs ingested per day
-    DAILY_APPROVAL_N: 25,      // max items pushed to the Approvals queue per day
+    DAILY_APPROVAL_N: 25,      // max new approval rows created by one scoring run
     CHUNK_SIZE: 8,             // items processed per trigger run (respects the 6-min cap)
     AGENCY_DRAFTS_PER_RUN: 8,  // agency intro drafts created per run
     MAINTENANCE_CHECKS: 80,    // link/maintenance checks per run
@@ -923,7 +923,7 @@ const Sources = {
           j.job_is_remote, j.job_posted_at_datetime_utc || '', j.job_description || '');
         if (valid) out.push(valid);
       });
-    }).filter(Boolean);
+    });
     return out;
   },
 
@@ -998,7 +998,7 @@ const Sources = {
         j.remote, j.published_on || '', '');
       if (valid) valid.mode = j.remote ? 'remote' : '';
       return valid;
-    });
+    }).filter(Boolean);
   },
 
   job_(source, company, role, url, location, remote, postedDate, descr) {

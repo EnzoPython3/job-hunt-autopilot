@@ -5,9 +5,12 @@
 
 function dailySource() {
   try {
-    Crm.ensureSchema();
-    const added = Sources.ingest(Config.tunable('DAILY_SOURCE_CAP'));
-    Logger.log('dailySource: added ' + added + ' new opportunities');
+    return Runtime.withScriptLock('dailySource', 5000, function () {
+      Crm.ensureSchema();
+      const added = Sources.ingest(Config.tunable('DAILY_SOURCE_CAP'));
+      Logger.log('dailySource: added ' + added + ' new opportunities');
+      return added;
+    });
   } catch (e) {
     Alerts.notify('dailySource', e);
     throw e;
@@ -16,9 +19,12 @@ function dailySource() {
 
 function scoreQueue() {
   try {
-    Crm.ensureSchema();
-    const r = Match.scoreQueue(Config.tunable('CHUNK_SIZE'));
-    Logger.log('scoreQueue: scored ' + r.scored + ', queued ' + r.queued);
+    return Runtime.withScriptLock('scoreQueue', 5000, function () {
+      Crm.ensureSchema();
+      const r = Match.scoreQueue(Config.tunable('CHUNK_SIZE'));
+      Logger.log('scoreQueue: scored ' + r.scored + ', queued ' + r.queued);
+      return r;
+    });
   } catch (e) {
     Alerts.notify('scoreQueue', e);
     throw e;
@@ -143,7 +149,9 @@ function followUps() {
           const draftId = Outreach.draftFollowUp(o, stage);
           if (draftId) n++;
         } catch (e) {
-          failures.push(Runtime.failure('followUp:' + o.id, e));
+          const failure = Runtime.failure('followUp:' + o.id, e);
+          failures.push(failure);
+          if (Crm.recordOpportunityFailure) Crm.recordOpportunityFailure(o._row, failure.message);
         } finally {
           if (claimToken && Crm.releaseClaim) {
             try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, o.id, claimToken); }
@@ -188,7 +196,9 @@ function prepInterviews() {
           InterviewPrep.generateFor(o);
           n++;
         } catch (e) {
-          failures.push(Runtime.failure('interview:' + o.id, e));
+          const failure = Runtime.failure('interview:' + o.id, e);
+          failures.push(failure);
+          if (Crm.recordOpportunityFailure) Crm.recordOpportunityFailure(o._row, failure.message);
         } finally {
           if (claimToken && Crm.releaseClaim) {
             try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, o.id, claimToken); }
@@ -208,8 +218,10 @@ function prepInterviews() {
 
 function weeklyReport() {
   try {
-    Crm.ensureSchema();
-    Report.sendWeekly();
+    return Runtime.withScriptLock('weeklyReport', 5000, function () {
+      Crm.ensureSchema();
+      return Report.sendWeekly();
+    });
   } catch (e) {
     Alerts.notify('weeklyReport', e);
     throw e;

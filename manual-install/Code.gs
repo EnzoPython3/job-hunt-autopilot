@@ -315,21 +315,32 @@ const Alerts = {
   notify(fnName, err) {
     try {
       const to = Config.get('ALERT_EMAIL') || Config.defaults.ALERT_EMAIL;
+      const name = alertText_(fnName, 80);
+      const detail = alertText_(err && err.stack ? err.stack : String(err), 900);
       MailApp.sendEmail({
         to: to,
-        subject: 'Job-Hunt Autopilot: ' + fnName + ' failed',
-        body: 'The scheduled job "' + fnName + '" failed:\n\n' +
-          (err && err.stack ? err.stack : String(err)) +
-          '\n\nCheck the Apps Script execution log for full details.' +
-          '\n\nStuck? Open an issue: https://github.com/EnzoPython3/job-hunt-autopilot/issues' +
-          '\nor DM Enzo on LinkedIn: https://www.linkedin.com/in/enzo-snyman/',
+        subject: 'Job-Hunt Autopilot: ' + name + ' failed',
+        body: 'The scheduled job "' + name + '" failed:\n\n' + detail +
+          '\n\nCheck the Apps Script execution log for full details.',
         name: 'Job-Hunt Autopilot'
       });
     } catch (e) {
-      Logger.log('Alerts.notify: failed to send alert email: ' + e);
+      // Never call notify from here. A delivery failure must not recurse into
+      // another alert attempt or expose the mailer error to the user.
+      Logger.log('Alerts.notify: failed to send alert email');
     }
   }
 };
+
+function alertText_(value, maximum) {
+  let text = '';
+  try { text = String(value || ''); } catch (e) { text = 'Unknown failure'; }
+  text = text.replace(/https?:\/\/[^\s<>"']+/gi, '[URL]');
+  text = text.replace(/\b(?:gemini|adzuna|rapidapi)?[_-]?(?:api[_-]?key|app[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi, '[REDACTED]');
+  text = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (text.length > maximum) text = text.slice(0, maximum - 3) + '...';
+  return text || 'Unknown failure';
+}
 
 
 // ======================================================================
@@ -1964,9 +1975,12 @@ const Report = {
 
 function dailySource() {
   try {
-    Crm.ensureSchema();
-    const added = Sources.ingest(Config.tunable('DAILY_SOURCE_CAP'));
-    Logger.log('dailySource: added ' + added + ' new opportunities');
+    return Runtime.withScriptLock('dailySource', 5000, function () {
+      Crm.ensureSchema();
+      const added = Sources.ingest(Config.tunable('DAILY_SOURCE_CAP'));
+      Logger.log('dailySource: added ' + added + ' new opportunities');
+      return added;
+    });
   } catch (e) {
     Alerts.notify('dailySource', e);
     throw e;
@@ -1975,9 +1989,12 @@ function dailySource() {
 
 function scoreQueue() {
   try {
-    Crm.ensureSchema();
-    const r = Match.scoreQueue(Config.tunable('CHUNK_SIZE'));
-    Logger.log('scoreQueue: scored ' + r.scored + ', queued ' + r.queued);
+    return Runtime.withScriptLock('scoreQueue', 5000, function () {
+      Crm.ensureSchema();
+      const r = Match.scoreQueue(Config.tunable('CHUNK_SIZE'));
+      Logger.log('scoreQueue: scored ' + r.scored + ', queued ' + r.queued);
+      return r;
+    });
   } catch (e) {
     Alerts.notify('scoreQueue', e);
     throw e;
@@ -2102,7 +2119,9 @@ function followUps() {
           const draftId = Outreach.draftFollowUp(o, stage);
           if (draftId) n++;
         } catch (e) {
-          failures.push(Runtime.failure('followUp:' + o.id, e));
+          const failure = Runtime.failure('followUp:' + o.id, e);
+          failures.push(failure);
+          if (Crm.recordOpportunityFailure) Crm.recordOpportunityFailure(o._row, failure.message);
         } finally {
           if (claimToken && Crm.releaseClaim) {
             try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, o.id, claimToken); }
@@ -2147,7 +2166,9 @@ function prepInterviews() {
           InterviewPrep.generateFor(o);
           n++;
         } catch (e) {
-          failures.push(Runtime.failure('interview:' + o.id, e));
+          const failure = Runtime.failure('interview:' + o.id, e);
+          failures.push(failure);
+          if (Crm.recordOpportunityFailure) Crm.recordOpportunityFailure(o._row, failure.message);
         } finally {
           if (claimToken && Crm.releaseClaim) {
             try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, o.id, claimToken); }
@@ -2167,8 +2188,10 @@ function prepInterviews() {
 
 function weeklyReport() {
   try {
-    Crm.ensureSchema();
-    Report.sendWeekly();
+    return Runtime.withScriptLock('weeklyReport', 5000, function () {
+      Crm.ensureSchema();
+      return Report.sendWeekly();
+    });
   } catch (e) {
     Alerts.notify('weeklyReport', e);
     throw e;
@@ -2286,7 +2309,8 @@ function onSheetEdit(e) {
     const cell = sh.getRange(row, Crm.colIndex(Crm.TABS.OPPORTUNITIES, 'applied_date'));
     if (String(cell.getValue()).trim() === '') cell.setValue(new Date());
   } catch (err) {
-    Logger.log('onSheetEdit: ' + err);
+    try { Alerts.notify('onSheetEdit', err); } catch (alertError) { Logger.log('onSheetEdit: alert unavailable'); }
+    throw err;
   }
 }
 
@@ -2683,6 +2707,15 @@ function seedAgenciesFromSample_() {
  * Checks which Script Properties are set and live-tests Adzuna + Gemini + the sheet.
  */
 function diagnose() {
+  try {
+    return diagnose_();
+  } catch (e) {
+    Alerts.notify('diagnose', e);
+    throw e;
+  }
+}
+
+function diagnose_() {
   const out = [];
   const P = PropertiesService.getScriptProperties();
   const has = function (k) { const v = P.getProperty(k); return v ? ('SET (' + String(v).length + ' chars)') : 'NOT SET'; };
@@ -2762,6 +2795,19 @@ function diagnose() {
  */
 function pruneDeadLinks() {
   try {
+    const work = function () {
+      return pruneDeadLinks_();
+    };
+    return (typeof Runtime !== 'undefined' && Runtime.withScriptLock)
+      ? Runtime.withScriptLock('pruneDeadLinks', 5000, work)
+      : work();
+  } catch (e) {
+    Alerts.notify('pruneDeadLinks', e);
+    throw e;
+  }
+}
+
+function pruneDeadLinks_() {
     Crm.ensureSchema();
     const MAX_CHECKS = Config.tunable('MAINTENANCE_CHECKS');
     const deadline = (typeof Runtime !== 'undefined' && Runtime.deadlineMs)
@@ -2801,10 +2847,6 @@ function pruneDeadLinks() {
       (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
     Logger.log(report);
     return report;
-  } catch (e) {
-    Alerts.notify('pruneDeadLinks', e);
-    throw e;
-  }
 }
 
 function diagnosticResponseBody_(res) {

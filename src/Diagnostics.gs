@@ -3,6 +3,15 @@
  * Checks which Script Properties are set and live-tests Adzuna + Gemini + the sheet.
  */
 function diagnose() {
+  try {
+    return diagnose_();
+  } catch (e) {
+    Alerts.notify('diagnose', e);
+    throw e;
+  }
+}
+
+function diagnose_() {
   const out = [];
   const P = PropertiesService.getScriptProperties();
   const has = function (k) { const v = P.getProperty(k); return v ? ('SET (' + String(v).length + ' chars)') : 'NOT SET'; };
@@ -82,6 +91,19 @@ function diagnose() {
  */
 function pruneDeadLinks() {
   try {
+    const work = function () {
+      return pruneDeadLinks_();
+    };
+    return (typeof Runtime !== 'undefined' && Runtime.withScriptLock)
+      ? Runtime.withScriptLock('pruneDeadLinks', 5000, work)
+      : work();
+  } catch (e) {
+    Alerts.notify('pruneDeadLinks', e);
+    throw e;
+  }
+}
+
+function pruneDeadLinks_() {
     Crm.ensureSchema();
     const MAX_CHECKS = Config.tunable('MAINTENANCE_CHECKS');
     const deadline = (typeof Runtime !== 'undefined' && Runtime.deadlineMs)
@@ -121,10 +143,6 @@ function pruneDeadLinks() {
       (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
     Logger.log(report);
     return report;
-  } catch (e) {
-    Alerts.notify('pruneDeadLinks', e);
-    throw e;
-  }
 }
 
 function diagnosticResponseBody_(res) {

@@ -59,7 +59,8 @@ function onSheetEdit(e) {
     const cell = sh.getRange(row, Crm.colIndex(Crm.TABS.OPPORTUNITIES, 'applied_date'));
     if (String(cell.getValue()).trim() === '') cell.setValue(new Date());
   } catch (err) {
-    Logger.log('onSheetEdit: ' + err);
+    try { Alerts.notify('onSheetEdit', err); } catch (alertError) { Logger.log('onSheetEdit: alert unavailable'); }
+    throw err;
   }
 }
 

@@ -121,3 +121,105 @@ test('Match limits new approval rows per scoring run', () => {
   assert.equal(updates.filter((args) => args[2].status === 'queued_for_approval').length, 2);
   assert.equal(updates.length, 2);
 });
+
+test('Runtime.withScriptLock releases the script lock even when work fails', () => {
+  const calls = [];
+  const Runtime = loadGs(resolve(ROOT, 'src/Runtime.gs'), {
+    services: {
+      LockService: {
+        getScriptLock: () => ({
+          tryLock: (waitMs) => calls.push(['tryLock', waitMs]) || true,
+          releaseLock: () => calls.push(['releaseLock'])
+        })
+      }
+    },
+    names: ['Runtime']
+  }).Runtime;
+
+  assert.throws(() => Runtime.withScriptLock('scoreQueue', 250, () => {
+    throw new Error('work failed');
+  }), /work failed/);
+  assert.deepEqual(calls, [['tryLock', 250], ['releaseLock']]);
+});
+
+test('Runtime refuses a lock it cannot acquire and does not run the callback', () => {
+  let ran = false;
+  const Runtime = loadGs(resolve(ROOT, 'src/Runtime.gs'), {
+    services: {
+      LockService: {
+        getScriptLock: () => ({ tryLock: () => false, releaseLock: () => { throw new Error('must not release'); } })
+      }
+    },
+    names: ['Runtime']
+  }).Runtime;
+
+  assert.throws(() => Runtime.withScriptLock('scoreQueue', 50, () => { ran = true; }), /lock/i);
+  assert.equal(ran, false);
+});
+
+test('Runtime bounds batch values and stops once the deadline is reached', () => {
+  const Runtime = loadGs(resolve(ROOT, 'src/Runtime.gs'), { names: ['Runtime'] }).Runtime;
+  assert.equal(Runtime.boundedBatch('12', 5, 10), 10);
+  assert.equal(Runtime.boundedBatch('0', 5, 10), 5);
+  assert.equal(Runtime.boundedBatch('nope', 5, 10), 5);
+  assert.equal(Runtime.shouldStop(Date.now() - 1), true);
+  assert.equal(Runtime.shouldStop(Date.now() + 10000), false);
+  assert.ok(Runtime.deadlineMs(100) > Date.now());
+});
+
+test('Runtime.failure gives a bounded trigger-safe failure record', () => {
+  const Runtime = loadGs(resolve(ROOT, 'src/Runtime.gs'), { names: ['Runtime'] }).Runtime;
+  const failure = Runtime.failure('opportunity:job-1', new Error('bad response\nsecret=do-not-log'));
+  assert.deepEqual(failure, {
+    name: 'opportunity:job-1',
+    message: 'bad response secret=do-not-log'
+  });
+  assert.ok(failure.message.length <= 240);
+});
+
+test('Crm headers include processing and artefact fields while old rows remain claimable', () => {
+  const { Crm } = loadGs(resolve(ROOT, 'src/Crm.gs'), { names: ['Crm'] });
+  for (const field of [
+    'processing_state', 'processing_key', 'processing_started_at',
+    'cv_file_id', 'cover_file_id', 'draft_id', 'failure_message'
+  ]) assert.ok(Crm.HEADERS.Opportunities.includes(field), field);
+  for (const field of ['processing_state', 'processing_key', 'processing_started_at', 'failure_message']) {
+    assert.ok(Crm.HEADERS.Approvals.includes(field), `Approvals.${field}`);
+    assert.ok(Crm.HEADERS.Contacts.includes(field), `Contacts.${field}`);
+  }
+});
+
+test('Crm claims stable IDs, refuses active duplicates, and reclaims expired claims', () => {
+  const updates = [];
+  const rows = [{ _row: 27, id: 'opp-stable', processing_state: 'working', processing_key: 'opp-stable',
+    processing_started_at: new Date(Date.now() - 1000) }];
+  const { Crm } = loadGs(resolve(ROOT, 'src/Crm.gs'), { names: ['Crm'] });
+  Crm.readAll = () => rows;
+  Crm.updateRow = (...args) => updates.push(args);
+  Crm.Runtime = { withScriptLock: (_name, _waitMs, fn) => fn() };
+
+  assert.equal(Crm.claim('Opportunities', 'opp-stable', { leaseMs: 60000 }), false);
+  assert.equal(Crm.claim('Opportunities', 'opp-stable', { leaseMs: 500 }), true);
+  assert.equal(updates[0][1], 27);
+  assert.equal(updates[0][2].processing_key, 'opp-stable');
+  assert.equal(updates[0][2].processing_state, 'working');
+
+  rows[0].processing_started_at = new Date(Date.now() - 5000);
+  assert.equal(Crm.claim('Opportunities', 'opp-stable', { leaseMs: 1000 }), true);
+});
+
+test('Crm releaseClaim uses the stable key and clears only its own claim', () => {
+  const updates = [];
+  const rows = [{ _row: 44, id: 'contact-stable', processing_state: 'working', processing_key: 'contact-stable' }];
+  const { Crm } = loadGs(resolve(ROOT, 'src/Crm.gs'), { names: ['Crm'] });
+  Crm.readAll = () => rows;
+  Crm.updateRow = (...args) => updates.push(args);
+  Crm.Runtime = { withScriptLock: (_name, _waitMs, fn) => fn() };
+
+  assert.equal(Crm.releaseClaim('Contacts', 'different-key'), false);
+  assert.equal(Crm.releaseClaim('Contacts', 'contact-stable'), true);
+  assert.equal(updates[0][1], 44);
+  assert.equal(updates[0][2].processing_state, '');
+  assert.equal(updates[0][2].processing_key, '');
+  assert.equal(updates[0][2].processing_started_at, '');
+});

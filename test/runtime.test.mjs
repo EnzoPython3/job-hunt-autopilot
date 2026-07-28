@@ -698,7 +698,7 @@ test('dailySource uses the shared lock and alerts before rethrowing trigger fail
       Logger: { log: () => {} }
     },
     names: ['dailySource']
-  }).dailySource;
+  });
 
   assert.throws(() => dailySource(), /source failed/);
   assert.deepEqual(events.map((event) => event[0]), ['lock', 'schema', 'alert']);
@@ -724,7 +724,7 @@ test('per-item follow-up and interview failures persist retryable CRM state befo
       Outreach: { draftFollowUp: () => { throw new Error('retry follow-up'); } },
       Alerts: { notify: (...args) => alerts.push(args) }, Logger: { log: () => {} }
     }, names: ['followUps']
-  }).followUps;
+  });
   assert.throws(() => followUps(), /retry follow-up/);
   assert.equal(updates.length, 1);
   assert.equal(updates[0][0], 2);
@@ -740,7 +740,7 @@ test('onSheetEdit reports actionable failures to Alerts and rethrows them', () =
       Alerts: { notify: (...args) => alerts.push(args) },
       Logger: { log: () => {} }
     }, names: ['onSheetEdit']
-  }).onSheetEdit;
+  });
   const sheet = { getName: () => 'Opportunities' };
   const range = { getSheet: () => sheet, getNumRows: () => 1, getNumColumns: () => 1, getColumn: () => 2, getRow: () => 2 };
   assert.throws(() => onSheetEdit({ range, value: 'sent' }), /sheet unavailable/);

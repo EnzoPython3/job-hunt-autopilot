@@ -14,10 +14,13 @@ const Crm = {
   HEADERS: {
     Opportunities: ['id', 'source', 'company', 'role', 'location', 'mode', 'url', 'contact_email',
       'posted_date', 'fit_score', 'track', 'rationale', 'status', 'cv_pdf_url', 'cover_url',
-      'outreach_draft_url', 'applied_date', 'response', 'interview_date', 'notes', 'created_at', 'updated_at'],
+      'outreach_draft_url', 'applied_date', 'response', 'interview_date', 'notes', 'created_at', 'updated_at',
+      'processing_state', 'processing_key', 'processing_started_at', 'cv_file_id', 'cover_file_id', 'draft_id', 'failure_message'],
     Approvals: ['id', 'company', 'role', 'url', 'fit_score', 'track', 'rationale',
-      'cv_pdf_url', 'cover_url', 'outreach_draft_url', 'channel', 'decision', 'edited_notes'],
-    Contacts: ['id', 'name', 'email', 'type', 'company', 'focus', 'last_contacted', 'notes'],
+      'cv_pdf_url', 'cover_url', 'outreach_draft_url', 'channel', 'decision', 'edited_notes',
+      'processing_state', 'processing_key', 'processing_started_at', 'cv_file_id', 'cover_file_id', 'draft_id', 'failure_message'],
+    Contacts: ['id', 'name', 'email', 'type', 'company', 'focus', 'last_contacted', 'notes',
+      'processing_state', 'processing_key', 'processing_started_at', 'cv_file_id', 'cover_file_id', 'draft_id', 'failure_message'],
     KPIs: ['week_start', 'sourced', 'scored', 'queued', 'approved', 'submitted', 'sent', 'responses', 'interviews', 'notes'],
     Config: ['key', 'value']
   },
@@ -100,5 +103,52 @@ const Crm = {
 
   setStatus(rowNumber, status) {
     this.updateRow(this.TABS.OPPORTUNITIES, rowNumber, { status: status, updated_at: new Date() });
+  },
+
+  claim(tab, stableId, options) {
+    const opts = options || {};
+    const key = String(stableId || '').trim();
+    if (!key) throw new Error('Stable CRM ID is required for a claim');
+    const leaseMs = Math.max(1000, Number(opts.leaseMs) || 300000);
+    const now = opts.now ? new Date(opts.now) : new Date();
+    const runtime = this.Runtime || Runtime;
+    const self = this;
+    return runtime.withScriptLock('crm-claim:' + tab, Number(opts.waitMs) || 5000, function () {
+      const row = self.readAll(tab).filter(function (candidate) {
+        return String(candidate.id || '') === key;
+      })[0];
+      if (!row) return false;
+      const started = row.processing_started_at ? new Date(row.processing_started_at).getTime() : 0;
+      const active = String(row.processing_state || '') === 'working' && started > 0 &&
+        now.getTime() - started < leaseMs;
+      if (active) return false;
+      self.updateRow(tab, row._row, {
+        processing_state: 'working',
+        processing_key: key,
+        processing_started_at: now,
+        failure_message: ''
+      });
+      return true;
+    });
+  },
+
+  releaseClaim(tab, stableId, failureMessage) {
+    const key = String(stableId || '').trim();
+    if (!key) return false;
+    const runtime = this.Runtime || Runtime;
+    const self = this;
+    return runtime.withScriptLock('crm-release:' + tab, 5000, function () {
+      const row = self.readAll(tab).filter(function (candidate) {
+        return String(candidate.id || '') === key && String(candidate.processing_key || '') === key;
+      })[0];
+      if (!row) return false;
+      self.updateRow(tab, row._row, {
+        processing_state: '',
+        processing_key: '',
+        processing_started_at: '',
+        failure_message: failureMessage || ''
+      });
+      return true;
+    });
   }
 };

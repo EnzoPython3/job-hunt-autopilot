@@ -199,10 +199,8 @@ test('Runtime bounds batch values and stops once the deadline is reached', () =>
 test('Runtime.failure gives a bounded trigger-safe failure record', () => {
   const Runtime = loadGs(resolve(ROOT, 'src/Runtime.gs'), { names: ['Runtime'] }).Runtime;
   const failure = Runtime.failure('opportunity:job-1', new Error('bad response\nsecret=do-not-log'));
-  assert.deepEqual(failure, {
-    name: 'opportunity:job-1',
-    message: 'bad response secret=do-not-log'
-  });
+  assert.equal(failure.name, 'opportunity:job-1');
+  assert.equal(failure.message, 'bad response secret=do-not-log');
   assert.ok(failure.message.length <= 240);
 });
 

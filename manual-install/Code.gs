@@ -275,26 +275,42 @@ const Gemini = {
     const model = Config.get(Config.KEYS.GEMINI_MODEL) || Config.defaults.GEMINI_MODEL;
     const url = this.endpoint_(model) + '?key=' + encodeURIComponent(key);
 
-    const genConfig = {
-      temperature: opts.temperature == null ? 0.3 : opts.temperature,
-      maxOutputTokens: opts.maxOutputTokens || 2048,
-      // Gemini 2.5+ models spend output budget on hidden "thinking" tokens,
-      // which truncates short answers. Our tasks are classification / short
-      // generation, so disable thinking by default. Override with opts.thinkingBudget.
-      thinkingConfig: { thinkingBudget: opts.thinkingBudget == null ? 0 : opts.thinkingBudget }
+    const buildPayload_ = function (includeThinkingConfig) {
+      const genConfig = {
+        temperature: opts.temperature == null ? 0.3 : opts.temperature,
+        maxOutputTokens: opts.maxOutputTokens || 2048
+      };
+      if (includeThinkingConfig) {
+        // Gemini 2.5 spends output budget on hidden "thinking" tokens, which
+        // truncates short answers, so we disable it by default. Newer model
+        // generations (e.g. Gemini 3.x, reached via the gemini-flash-latest
+        // alias) reject a literal 0 budget instead of accepting it as "off" -
+        // rather than hardcode per-model-generation support, generate() below
+        // retries once with this block omitted if the first attempt 400s.
+        genConfig.thinkingConfig = { thinkingBudget: opts.thinkingBudget == null ? 0 : opts.thinkingBudget };
+      }
+      if (opts.json) {
+        genConfig.responseMimeType = 'application/json';
+        if (opts.schema) genConfig.responseSchema = opts.schema;
+      }
+      const payload = {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: genConfig
+      };
+      if (opts.system) payload.systemInstruction = { parts: [{ text: opts.system }] };
+      return payload;
     };
-    if (opts.json) {
-      genConfig.responseMimeType = 'application/json';
-      if (opts.schema) genConfig.responseSchema = opts.schema;
+
+    let text;
+    try {
+      text = this.fetchWithRetry_(url, buildPayload_(true));
+    } catch (e) {
+      if (String(e).indexOf('HTTP 400') !== -1) {
+        text = this.fetchWithRetry_(url, buildPayload_(false));
+      } else {
+        throw e;
+      }
     }
-
-    const payload = {
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: genConfig
-    };
-    if (opts.system) payload.systemInstruction = { parts: [{ text: opts.system }] };
-
-    const text = this.fetchWithRetry_(url, payload);
     if (opts.json) {
       try { return JSON.parse(text); }
       catch (e) { throw new Error('Gemini did not return valid JSON: ' + e + ' :: ' + String(text).slice(0, 300)); }

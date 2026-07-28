@@ -85,7 +85,7 @@ test('make-release rejects a tracked release secret in a disposable repository',
         env: { ...process.env, RELEASE_DIR: output },
         encoding: 'utf8'
       });
-      assert.notEqual(result.status, 0);
+      assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
       assert.match(`${result.stdout}\n${result.stderr}`, /secret|PII|forbidden|release content/i);
     } finally {
       rmSync(output, { recursive: true, force: true });

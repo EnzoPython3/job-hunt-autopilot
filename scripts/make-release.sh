@@ -41,7 +41,7 @@ fi
 
 commit="$(git rev-parse HEAD)"
 
-if ! node --test test/bundle.test.mjs --test-name-pattern='tracked release content' >/dev/null; then
+if ! env -u NODE_TEST_CONTEXT node --test test/bundle.test.mjs --test-name-pattern='tracked release content' >/dev/null; then
   fail "forbidden secret or PII pattern found in tracked release content"
 fi
 

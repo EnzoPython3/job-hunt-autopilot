@@ -2437,6 +2437,7 @@ const Validation = {
 
   validHostname_(host) {
     if (!host || host.length > 253 || host.indexOf('..') !== -1) return false;
+    if (/^\d+(?:\.\d+)+$/.test(host)) return this.parseIpv4_(host) !== null;
     const labels = host.split('.');
     for (let i = 0; i < labels.length; i++) {
       if (!labels[i] || labels[i].length > 63 ||
@@ -2445,8 +2446,30 @@ const Validation = {
     return true;
   },
 
+  parseIpv4_(value) {
+    if (!/^\d+(?:\.\d+){3}$/.test(value)) return null;
+    const octets = value.split('.');
+    for (let i = 0; i < octets.length; i++) {
+      if (octets[i].length > 3) return null;
+      const number = Number(octets[i]);
+      if (number < 0 || number > 255) return null;
+      octets[i] = String(number);
+    }
+    return octets;
+  },
+
   validIpv6_(address) {
     if (!address || address.indexOf(':::') !== -1) return false;
+    const dotted = address.indexOf('.') !== -1;
+    if (dotted) {
+      const colon = address.lastIndexOf(':');
+      if (colon === -1) return false;
+      const octets = this.parseIpv4_(address.slice(colon + 1));
+      if (!octets) return false;
+      const high = ((Number(octets[0]) * 256) + Number(octets[1])).toString(16);
+      const low = ((Number(octets[2]) * 256) + Number(octets[3])).toString(16);
+      address = address.slice(0, colon + 1) + high + ':' + low;
+    }
     const compression = address.indexOf('::');
     if (compression !== -1 && compression !== address.lastIndexOf('::')) return false;
 

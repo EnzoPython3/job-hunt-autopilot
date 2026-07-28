@@ -825,6 +825,7 @@ const Sources = {
       // rows. JSearch/ATS already return direct links.
       if (/^adzuna/.test(job.source)) {
         const r = self.resolveUrl_(job.url, 4, deadline);
+        if (r.stopped) { stopped = true; break; }
         if (!r.alive) { dead++; continue; }
         job.url = r.url;
         job.id = self.hashId_(job.source, job.company, job.role, job.url);

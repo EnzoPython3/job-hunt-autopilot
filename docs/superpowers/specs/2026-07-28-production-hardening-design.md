@@ -80,7 +80,7 @@ Because Apps Script services are unavailable in local Node execution, the reposi
 
 Each bug fix will follow a red-green cycle: add a failing regression test, verify the expected failure, implement the smallest fix, and rerun the complete local suite.
 
-Authenticated Apps Script smoke tests remain a release gate where credentials are available. They will run against a disposable test Sheet, Drive folder, Gmail account, and test API keys, and will verify that the system creates drafts without sending messages.
+Authenticated Apps Script smoke tests are mandatory before live deployment. They will run against a disposable test Sheet, Drive folder, Gmail account, and test API keys, and will verify that the system creates drafts without sending messages. If the required credentials or test resources are unavailable, live deployment is blocked.
 
 ## Release gate
 
@@ -94,4 +94,3 @@ The release is ready only when:
 - The versioned ZIP is built from the committed tree and inspected.
 - Public PII and real secrets are absent from tracked files and the ZIP.
 - The release commit and verification evidence are recorded.
-

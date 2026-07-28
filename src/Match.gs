@@ -58,6 +58,7 @@ const Match = {
       try {
         const r = self.scoreOne(opp);
         const pass = Number(r.fit_score) >= threshold;
+        if (pass && queued >= approvalLimit) return;
         const canQueue = pass && queued < approvalLimit;
         const status = canQueue ? 'queued_for_approval' : 'scored';
         Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {

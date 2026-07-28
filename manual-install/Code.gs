@@ -1083,6 +1083,7 @@ const Match = {
       try {
         const r = self.scoreOne(opp);
         const pass = Number(r.fit_score) >= threshold;
+        if (pass && queued >= approvalLimit) return;
         const canQueue = pass && queued < approvalLimit;
         const status = canQueue ? 'queued_for_approval' : 'scored';
         Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
@@ -2287,7 +2288,7 @@ function diagnose() {
       const url = 'https://api.adzuna.com/v1/api/jobs/za/search/1?app_id=' + encodeURIComponent(appId) +
         '&app_key=' + encodeURIComponent(appKey) + '&results_per_page=3&what=' +
         encodeURIComponent('customer service') + '&sort_by=date&max_days_old=21&content-type=application/json';
-      const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
       out.push('  HTTP ' + res.getResponseCode());
       try {
         const d = JSON.parse(res.getContentText());
@@ -2307,7 +2308,8 @@ function diagnose() {
         '&country=za&date_posted=week';
       const res = UrlFetchApp.fetch(url, {
         method: 'get', muteHttpExceptions: true,
-        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' }
+        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+        validateHttpsCertificates: true
       });
       out.push('  HTTP ' + res.getResponseCode());
       if (res.getResponseCode() !== 200) out.push('  response shape: unavailable');
@@ -2322,8 +2324,8 @@ function diagnose() {
 
   out.push('=== Gemini live test ===');
   try {
-    const r = Gemini.generate('Reply with exactly: ok', { maxOutputTokens: 10 });
-    out.push('  reply: ' + String(r).trim().slice(0, 40));
+    Gemini.generate('Reply with exactly: ok', { maxOutputTokens: 10 });
+    out.push('  reply: received');
   } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== Sheet ===');

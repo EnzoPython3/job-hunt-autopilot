@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { chmodSync, cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -68,8 +68,8 @@ test('make-release writes provenance and only committed files to a temporary zip
 test('make-release rejects a tracked release secret in a disposable repository', () => {
   const fixture = mkdtempSync(join(tmpdir(), 'job-hunt-release-fixture-'));
   try {
-    cpSync(ROOT, fixture, { recursive: true, filter: (source) => !source.includes('/.git') });
-    rmSync(join(fixture, '.git'), { recursive: true, force: true });
+    const archive = execFileSync('git', ['archive', 'HEAD'], { cwd: ROOT });
+    execFileSync('tar', ['-x', '-C', fixture], { input: archive });
     execFileSync('git', ['init', '-q'], { cwd: fixture });
     execFileSync('git', ['config', 'user.email', 'release-test@example.test'], { cwd: fixture });
     execFileSync('git', ['config', 'user.name', 'Release Test'], { cwd: fixture });

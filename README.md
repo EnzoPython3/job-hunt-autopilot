@@ -87,5 +87,3 @@ Setup tab if it's listed there) to pick up the new default.
 
 ## Licence
 [MIT](LICENSE). Use it, fork it, adapt it. Contributions welcome.
-
-AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

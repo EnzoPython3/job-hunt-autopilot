@@ -253,6 +253,58 @@ const Config = {
 
 
 // ======================================================================
+// Runtime.gs
+// ======================================================================
+
+/**
+ * Runtime.gs - shared execution guards for scheduled workflows.
+ *
+ * These helpers deliberately depend only on Apps Script's LockService and
+ * standard JavaScript primitives so they are easy to exercise locally.
+ */
+const Runtime = {
+  withScriptLock(name, waitMs, fn) {
+    if (typeof fn !== 'function') throw new Error('Lock callback is required');
+    const lock = LockService.getScriptLock();
+    const wait = this.boundedBatch(waitMs, 0, 300000);
+    let acquired = false;
+    try {
+      acquired = lock.tryLock(wait);
+      if (!acquired) throw new Error('Could not acquire script lock: ' + String(name || 'unnamed'));
+      return fn();
+    } finally {
+      if (acquired) lock.releaseLock();
+    }
+  },
+
+  deadlineMs(limitMs) {
+    const limit = this.boundedBatch(limitMs, 270000, 330000);
+    return Date.now() + limit;
+  },
+
+  shouldStop(deadline) {
+    return deadline !== null && deadline !== undefined && Date.now() >= Number(deadline);
+  },
+
+  boundedBatch(value, fallback, maximum) {
+    const safeFallback = Math.max(1, Math.floor(Number(fallback)) || 1);
+    const safeMaximum = Math.max(1, Math.floor(Number(maximum)) || safeFallback);
+    const numeric = Number(value);
+    if (!isFinite(numeric) || numeric <= 0) return Math.min(safeFallback, safeMaximum);
+    return Math.min(Math.max(1, Math.floor(numeric)), safeMaximum);
+  },
+
+  failure(name, error) {
+    let message = '';
+    try { message = String(error && error.message ? error.message : error || 'Unknown failure'); } catch (e) { message = 'Unknown failure'; }
+    message = message.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (message.length > 240) message = message.slice(0, 237) + '...';
+    return { name: String(name || 'unknown'), message: message || 'Unknown failure' };
+  }
+};
+
+
+// ======================================================================
 // Alerts.gs
 // ======================================================================
 
@@ -528,10 +580,13 @@ const Crm = {
   HEADERS: {
     Opportunities: ['id', 'source', 'company', 'role', 'location', 'mode', 'url', 'contact_email',
       'posted_date', 'fit_score', 'track', 'rationale', 'status', 'cv_pdf_url', 'cover_url',
-      'outreach_draft_url', 'applied_date', 'response', 'interview_date', 'notes', 'created_at', 'updated_at'],
+      'outreach_draft_url', 'applied_date', 'response', 'interview_date', 'notes', 'created_at', 'updated_at',
+      'processing_state', 'processing_key', 'processing_started_at', 'cv_file_id', 'cover_file_id', 'draft_id', 'failure_message'],
     Approvals: ['id', 'company', 'role', 'url', 'fit_score', 'track', 'rationale',
-      'cv_pdf_url', 'cover_url', 'outreach_draft_url', 'channel', 'decision', 'edited_notes'],
-    Contacts: ['id', 'name', 'email', 'type', 'company', 'focus', 'last_contacted', 'notes'],
+      'cv_pdf_url', 'cover_url', 'outreach_draft_url', 'channel', 'decision', 'edited_notes',
+      'processing_state', 'processing_key', 'processing_started_at', 'cv_file_id', 'cover_file_id', 'draft_id', 'failure_message'],
+    Contacts: ['id', 'name', 'email', 'type', 'company', 'focus', 'last_contacted', 'notes',
+      'processing_state', 'processing_key', 'processing_started_at', 'cv_file_id', 'cover_file_id', 'draft_id', 'failure_message'],
     KPIs: ['week_start', 'sourced', 'scored', 'queued', 'approved', 'submitted', 'sent', 'responses', 'interviews', 'notes'],
     Config: ['key', 'value']
   },
@@ -614,6 +669,53 @@ const Crm = {
 
   setStatus(rowNumber, status) {
     this.updateRow(this.TABS.OPPORTUNITIES, rowNumber, { status: status, updated_at: new Date() });
+  },
+
+  claim(tab, stableId, options) {
+    const opts = options || {};
+    const key = String(stableId || '').trim();
+    if (!key) throw new Error('Stable CRM ID is required for a claim');
+    const leaseMs = Math.max(1000, Number(opts.leaseMs) || 300000);
+    const now = opts.now ? new Date(opts.now) : new Date();
+    const runtime = this.Runtime || Runtime;
+    const self = this;
+    return runtime.withScriptLock('crm-claim:' + tab, Number(opts.waitMs) || 5000, function () {
+      const row = self.readAll(tab).filter(function (candidate) {
+        return String(candidate.id || '') === key;
+      })[0];
+      if (!row) return false;
+      const started = row.processing_started_at ? new Date(row.processing_started_at).getTime() : 0;
+      const active = String(row.processing_state || '') === 'working' && started > 0 &&
+        now.getTime() - started < leaseMs;
+      if (active) return false;
+      self.updateRow(tab, row._row, {
+        processing_state: 'working',
+        processing_key: key,
+        processing_started_at: now,
+        failure_message: ''
+      });
+      return true;
+    });
+  },
+
+  releaseClaim(tab, stableId, failureMessage) {
+    const key = String(stableId || '').trim();
+    if (!key) return false;
+    const runtime = this.Runtime || Runtime;
+    const self = this;
+    return runtime.withScriptLock('crm-release:' + tab, 5000, function () {
+      const row = self.readAll(tab).filter(function (candidate) {
+        return String(candidate.id || '') === key && String(candidate.processing_key || '') === key;
+      })[0];
+      if (!row) return false;
+      self.updateRow(tab, row._row, {
+        processing_state: '',
+        processing_key: '',
+        processing_started_at: '',
+        failure_message: failureMessage || ''
+      });
+      return true;
+    });
   }
 };
 

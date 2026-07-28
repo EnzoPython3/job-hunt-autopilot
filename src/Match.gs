@@ -48,6 +48,9 @@ const Match = {
   scoreQueue(chunk) {
     chunk = chunk || Config.tunable('CHUNK_SIZE');
     const threshold = Number(Config.tunable('SCORE_THRESHOLD'));
+    // DAILY_APPROVAL_N limits new approval rows created by this scoring run.
+    // Rows beyond the limit are scored but remain eligible for the next run.
+    const approvalLimit = Config.tunable('DAILY_APPROVAL_N');
     const pending = Crm.listByStatus('sourced').slice(0, chunk);
     const self = this;
     let scored = 0, queued = 0;
@@ -55,13 +58,14 @@ const Match = {
       try {
         const r = self.scoreOne(opp);
         const pass = Number(r.fit_score) >= threshold;
-        const status = pass ? 'queued_for_approval' : 'scored';
+        const canQueue = pass && queued < approvalLimit;
+        const status = canQueue ? 'queued_for_approval' : 'scored';
         Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
           fit_score: r.fit_score, track: r.track, rationale: r.rationale,
           status: status, updated_at: new Date()
         });
         scored++;
-        if (pass) { self.pushToApprovals_(opp, r); queued++; }
+        if (canQueue) { self.pushToApprovals_(opp, r); queued++; }
       } catch (e) {
         Logger.log('score ' + opp.id + ': ' + e);
         if (!e || !e.scoreValidation) {

@@ -23,11 +23,31 @@ const Config = {
     GEMINI_MODEL: 'GEMINI_MODEL',
     ADZUNA_APP_ID: 'ADZUNA_APP_ID',
     ADZUNA_APP_KEY: 'ADZUNA_APP_KEY',
+    // Compatibility alias retained for older installs and diagnostics.
+    ADZUNA_API_KEY: 'ADZUNA_API_KEY',
     RAPIDAPI_KEY: 'RAPIDAPI_KEY',
     SHEET_ID: 'SHEET_ID',
     DRIVE_FOLDER_ID: 'DRIVE_FOLDER_ID',
     MASTER_CV_DOC_ID: 'MASTER_CV_DOC_ID',
-    CANDIDATE_JSON: 'CANDIDATE_JSON'
+    CANDIDATE_JSON: 'CANDIDATE_JSON',
+    AGENCIES_CSV: 'AGENCIES_CSV',
+    ALERT_EMAIL: 'ALERT_EMAIL',
+    ALLOWED_REGIONS: 'ALLOWED_REGIONS',
+    EXCLUDED_REGIONS: 'EXCLUDED_REGIONS',
+    VAGUE_LOCATION_TAGS: 'VAGUE_LOCATION_TAGS',
+    ALLOW_REMOTE: 'ALLOW_REMOTE',
+    EXCLUDED_DOMAINS: 'EXCLUDED_DOMAINS',
+    TAILOR_FOR_PORTALS: 'TAILOR_FOR_PORTALS'
+  },
+
+  // These limits keep a single trigger run bounded even when a Config sheet is
+  // edited by mistake. They are deliberately lower than the Apps Script hard cap.
+  MAXIMA: {
+    CHUNK_SIZE: 25,
+    DAILY_SOURCE_CAP: 250,
+    DAILY_APPROVAL_N: 50,
+    AGENCY_DRAFTS_PER_RUN: 10,
+    MAINTENANCE_CHECKS: 100
   },
 
   props_() {
@@ -62,6 +82,7 @@ const Config = {
     DAILY_APPROVAL_N: 25,      // max items pushed to the Approvals queue per day
     CHUNK_SIZE: 8,             // items processed per trigger run (respects the 6-min cap)
     AGENCY_DRAFTS_PER_RUN: 8,  // agency intro drafts created per run
+    MAINTENANCE_CHECKS: 80,    // link/maintenance checks per run
     FOLLOWUP_DAYS: [3, 7],
     // Where failure-alert emails go (Alerts.gs). Override via a Script Property named
     // ALERT_EMAIL - this placeholder is not a real inbox, and every deployer of this
@@ -79,10 +100,17 @@ const Config = {
       for (let i = 0; i < rows.length; i++) {
         if (rows[i].key === key && rows[i].value !== '' && rows[i].value !== null) {
           const n = Number(rows[i].value);
+          if (this.MAXIMA[key] !== undefined) {
+            if (!isFinite(n) || n < 1) return this.defaults[key];
+            return Math.min(Math.floor(n), this.MAXIMA[key]);
+          }
           return isNaN(n) ? rows[i].value : n;
         }
       }
     } catch (e) { /* sheet not ready yet - use default */ }
+    if (this.MAXIMA[key] !== undefined) {
+      return Math.min(this.defaults[key], this.MAXIMA[key]);
+    }
     return this.defaults[key];
   },
 
@@ -169,7 +197,7 @@ const Config = {
     // Global hard-exclusions that always ship, regardless of config: whatjobs links
     // route to a search page, not the actual listing.
     const ALWAYS = ['whatjobs'];
-    const raw = this.get('EXCLUDED_DOMAINS');
+    const raw = this.get(this.KEYS.EXCLUDED_DOMAINS);
     const user = (raw === null || raw === '') ? []
       : String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
     return ALWAYS.concat(user.filter(function (d) { return ALWAYS.indexOf(d) === -1; }));
@@ -181,7 +209,7 @@ const Config = {
   // located elsewhere, and jobs with no readable location, are dropped. Pair with
   // excludedRegions to carve out sub-areas. Default: EMPTY = no location restriction.
   allowedRegions() {
-    const raw = this.get('ALLOWED_REGIONS');
+    const raw = this.get(this.KEYS.ALLOWED_REGIONS);
     if (raw === null || raw === '') return [];
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
@@ -191,7 +219,7 @@ const Config = {
   // loosely-tagged roles aren't missed - but a string that also names a specific
   // town must match allowedRegions. Override with Script Property VAGUE_LOCATION_TAGS.
   vagueLocationTags() {
-    const raw = this.get('VAGUE_LOCATION_TAGS');
+    const raw = this.get(this.KEYS.VAGUE_LOCATION_TAGS);
     const src = (raw !== null && raw !== '') ? raw : 'gauteng,south africa,za';
     return String(src).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
@@ -200,7 +228,7 @@ const Config = {
   // Property EXCLUDED_REGIONS (e.g. "pretoria,vaal"). Dropped unless the job is
   // remote. Default: EMPTY = exclude nothing.
   excludedRegions() {
-    const raw = this.get('EXCLUDED_REGIONS');
+    const raw = this.get(this.KEYS.EXCLUDED_REGIONS);
     if (raw === null || raw === '') return [];
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
@@ -208,7 +236,7 @@ const Config = {
   // Keep remote jobs from anywhere. Script Property ALLOW_REMOTE ("false" to disable).
   // Default: true.
   allowRemote() {
-    const raw = this.get('ALLOW_REMOTE');
+    const raw = this.get(this.KEYS.ALLOW_REMOTE);
     if (raw === null || raw === '') return true;
     return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
   },
@@ -217,7 +245,7 @@ const Config = {
   // Script Property TAILOR_FOR_PORTALS ("false" = tailor email applications only).
   // Default: true (tailor for portals too).
   tailorForPortals() {
-    const raw = this.get('TAILOR_FOR_PORTALS');
+    const raw = this.get(this.KEYS.TAILOR_FOR_PORTALS);
     if (raw === null || raw === '') return true;
     return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
   }
@@ -603,16 +631,20 @@ const Crm = {
  * dropped; JSearch and ATS return direct links, so they are trusted for speed.
  */
 const Sources = {
+  lastFailureReport_: [],
+
   ingest(cap) {
     cap = cap || Config.tunable('DAILY_SOURCE_CAP');
     const self = this;
     const t0 = Date.now();
     const found = [];
-    try { Array.prototype.push.apply(found, this.fromJSearch_()); } catch (e) { Logger.log('JSearch: ' + e); }
-    try { Array.prototype.push.apply(found, this.fromAdzuna()); } catch (e) { Logger.log('Adzuna: ' + e); }
+    const failures = [];
+    this.lastFailureReport_ = failures;
+    try { Array.prototype.push.apply(found, this.fromJSearch_()); } catch (e) { this.recordFailure_(failures, 'JSearch'); }
+    try { Array.prototype.push.apply(found, this.fromAdzuna()); } catch (e) { this.recordFailure_(failures, 'Adzuna'); }
     Config.atsBoards().forEach(function (b) {
       try { Array.prototype.push.apply(found, self.fromAts(b)); }
-      catch (e) { Logger.log('ATS ' + b.type + '/' + b.slug + ': ' + e); }
+      catch (e) { self.recordFailure_(failures, 'ATS ' + b.type); }
     });
 
     // Read existing ids ONCE. Calling Crm.existsOpportunity per job re-read the
@@ -666,7 +698,18 @@ const Sources = {
     if (offloc) skips.push(offloc + ' out-of-location');
     if (skips.length) Logger.log('ingest: skipped ' + skips.join(', ') + '.');
     if (stopped) Logger.log('ingest: stopped at time budget; next run continues with what is still fresh.');
+    if (failures.length) {
+      Logger.log('ingest: ' + failures.length + ' source failure(s); retry is required.');
+      throw new Error('Source ingest failed: ' + failures.length + ' source failure(s)');
+    }
     return added;
+  },
+
+  recordFailure_(failures, label) {
+    if (failures.length >= 20) return;
+    const entry = String(label) + ': source request failed';
+    failures.push(entry);
+    this.lastFailureReport_ = failures;
   },
 
   // Phrases boards print on a closed posting (many answer HTTP 200 for these).
@@ -682,6 +725,7 @@ const Sources = {
    * request marks the link dead (the job simply re-ingests on a later run).
    */
   resolveUrl_(url, maxHops) {
+    url = Validation.safeHttpsUrl(url);
     if (!url) return { url: url, alive: false };
     maxHops = maxHops || 4;
     let cur = url;
@@ -689,7 +733,7 @@ const Sources = {
     try {
       for (let h = 0; h < maxHops; h++) {
         const res = UrlFetchApp.fetch(cur, {
-          followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: false
+          followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: true
         });
         const code = res.getResponseCode();
         if (code >= 300 && code < 400) {
@@ -697,7 +741,8 @@ const Sources = {
           let loc = hdr['Location'] || hdr['location'];
           if (Array.isArray(loc)) loc = loc[0];
           if (!loc) return { url: cur, alive: true };
-          cur = this.absoluteUrl_(cur, loc);
+          cur = Validation.safeHttpsUrl(this.absoluteUrl_(cur, loc));
+          if (!cur) return { url: '', alive: false };
           hops++;
           continue;
         }
@@ -707,7 +752,8 @@ const Sources = {
         if (this.EXPIRED_RE.test(body)) return { url: cur, alive: false };
         const meta = body.match(/http-equiv=["']?refresh["']?[^>]*url\s*=\s*["']?([^"'>\s]+)/i);
         if (meta && meta[1] && h < maxHops - 1) {
-          cur = this.absoluteUrl_(cur, meta[1]);
+          cur = Validation.safeHttpsUrl(this.absoluteUrl_(cur, meta[1]));
+          if (!cur) return { url: '', alive: false };
           hops++;
           continue;
         }
@@ -715,7 +761,7 @@ const Sources = {
       }
       return { url: cur, alive: true };              // too many hops; treat as alive
     } catch (e) {
-      Logger.log('resolveUrl_ (' + url + '): ' + e);
+      Logger.log('resolveUrl_: request failed');
       return { url: cur, alive: hops > 0 };          // hop-0 failure = source link unreachable
     }
   },
@@ -779,20 +825,7 @@ const Sources = {
    * transient blip does not silently drop a good job.
    */
   linkAlive_(url) {
-    if (!url) return false;
-    try {
-      const res = UrlFetchApp.fetch(url, {
-        followRedirects: true, muteHttpExceptions: true, validateHttpsCertificates: false
-      });
-      const code = res.getResponseCode();
-      if (code >= 400) return false;
-      const body = res.getContentText().slice(0, 4000);
-      if (this.EXPIRED_RE.test(body)) return false;
-      return true;
-    } catch (e) {
-      Logger.log('linkAlive_ (' + url + '): ' + e);
-      return true;
-    }
+    return this.resolveUrl_(url).alive;
   },
 
   hashId_(source, company, role, url) {
@@ -803,7 +836,7 @@ const Sources = {
   },
 
   getJson_(url) {
-    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
     if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode());
     return JSON.parse(res.getContentText());
   },
@@ -824,21 +857,25 @@ const Sources = {
           '&sort_by=date' +          // newest first, so redirects are less likely expired
           '&max_days_old=10' +       // tighter window - stale postings 404 on click
           '&content-type=application/json';
-        const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+        const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
         if (res.getResponseCode() !== 200) { Logger.log('Adzuna ' + country + '/' + what + ' HTTP ' + res.getResponseCode()); return; }
         const data = JSON.parse(res.getContentText());
-        (data.results || []).forEach(function (r) {
+        if (!data || !Array.isArray(data.results)) return;
+        data.results.forEach(function (r) {
+          if (!r || typeof r !== 'object') return;
           const company = (r.company && r.company.display_name) || 'Unknown';
           const role = r.title || '';
           const jurl = r.redirect_url || '';
+          const valid = self.job_(
+            'adzuna:' + country, company, role, jurl,
+            (r.location && r.location.display_name) || '',
+            /remote|work from home|wfh/.test((role + ' ' + (r.description || '')).toLowerCase()),
+            r.created || '', r.description || ''
+          );
+          if (!valid) return;
           const hay = (role + ' ' + (r.description || '')).toLowerCase();
-          out.push({
-            id: self.hashId_('adzuna:' + country, company, role, jurl),
-            source: 'adzuna:' + country, company: company, role: role,
-            location: (r.location && r.location.display_name) || '',
-            mode: /remote|work from home|wfh/.test(hay) ? 'remote' : '',
-            url: jurl, posted_date: r.created || '', descr: r.description || ''
-          });
+          valid.mode = /remote|work from home|wfh/.test(hay) ? 'remote' : '';
+          out.push(valid);
         });
       });
     });
@@ -866,30 +903,27 @@ const Sources = {
       const res = UrlFetchApp.fetch(url, {
         method: 'get',
         muteHttpExceptions: true,
-        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' }
+        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+        validateHttpsCertificates: true
       });
       if (res.getResponseCode() !== 200) {
-        Logger.log('JSearch "' + what + '" HTTP ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 200));
+        Logger.log('JSearch HTTP ' + res.getResponseCode());
         return;
       }
       const data = JSON.parse(res.getContentText());
       self.pickJobs_(data).forEach(function (j) {
+        if (!j || typeof j !== 'object') return;
         const company = j.employer_name || 'Unknown';
         const role = j.job_title || '';
         const jurl = j.job_apply_link || '';
         if (!jurl) return;
         const publisher = j.job_publisher || 'jsearch';
         const loc = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || (j.job_location || '');
-        out.push({
-          id: self.hashId_('jsearch:' + publisher, company, role, jurl),
-          source: 'jsearch:' + publisher, company: company, role: role,
-          location: loc,
-          mode: j.job_is_remote ? 'remote' : '',
-          url: jurl, posted_date: j.job_posted_at_datetime_utc || '',
-          descr: j.job_description || ''
-        });
+        const valid = self.job_('jsearch:' + publisher, company, role, jurl, loc,
+          j.job_is_remote, j.job_posted_at_datetime_utc || '', j.job_description || '');
+        if (valid) out.push(valid);
       });
-    });
+    }).filter(Boolean);
     return out;
   },
 
@@ -921,56 +955,66 @@ const Sources = {
   fromGreenhouse_(slug) {
     const self = this;
     const data = this.getJson_('https://boards-api.greenhouse.io/v1/boards/' + slug + '/jobs');
-    return (data.jobs || []).map(function (j) {
-      return {
-        id: self.hashId_('greenhouse:' + slug, slug, j.title, j.absolute_url),
-        source: 'greenhouse:' + slug, company: slug, role: j.title,
-        location: (j.location && j.location.name) || '', mode: '',
-        url: j.absolute_url, posted_date: j.updated_at || ''
-      };
-    });
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      return j && self.job_('greenhouse:' + slug, slug, j.title, j.absolute_url,
+        j.location && j.location.name, false, j.updated_at || '', '');
+    }).filter(Boolean);
   },
 
   fromLever_(slug) {
     const self = this;
     const data = this.getJson_('https://api.lever.co/v0/postings/' + slug + '?mode=json');
-    return (data || []).map(function (j) {
-      return {
-        id: self.hashId_('lever:' + slug, slug, j.text, j.hostedUrl),
-        source: 'lever:' + slug, company: slug, role: j.text,
-        location: (j.categories && j.categories.location) || '',
-        mode: (j.categories && j.categories.commitment) || '',
-        url: j.hostedUrl, posted_date: j.createdAt || ''
-      };
-    });
+    if (!Array.isArray(data)) return [];
+    return data.map(function (j) {
+      const valid = j && self.job_('lever:' + slug, slug, j.text, j.hostedUrl,
+        j.categories && j.categories.location, false, j.createdAt || '', '');
+      if (valid) valid.mode = (j.categories && j.categories.commitment) || '';
+      return valid;
+    }).filter(Boolean);
   },
 
   fromAshby_(slug) {
     const self = this;
     const data = this.getJson_('https://api.ashbyhq.com/posting-api/job-board/' + slug + '?includeCompensation=false');
-    return (data.jobs || []).map(function (j) {
-      return {
-        id: self.hashId_('ashby:' + slug, slug, j.title, j.jobUrl),
-        source: 'ashby:' + slug, company: slug, role: j.title,
-        location: j.location || '', mode: j.isRemote ? 'remote' : '',
-        url: j.jobUrl, posted_date: j.publishedAt || ''
-      };
-    });
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      const valid = j && self.job_('ashby:' + slug, slug, j.title, j.jobUrl,
+        j.location, j.isRemote, j.publishedAt || '', '');
+      if (valid) valid.mode = j.isRemote ? 'remote' : '';
+      return valid;
+    }).filter(Boolean);
   },
 
   fromWorkable_(slug) {
     const self = this;
     const data = this.getJson_('https://apply.workable.com/api/v1/widget/accounts/' + slug + '?details=true');
-    return (data.jobs || []).map(function (j) {
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      if (!j || typeof j !== 'object') return null;
       const loc = j.location ? [j.location.city, j.location.country].filter(Boolean).join(', ') : '';
       const url = j.url || j.shortlink || '';
-      return {
-        id: self.hashId_('workable:' + slug, slug, j.title, url),
-        source: 'workable:' + slug, company: slug, role: j.title,
-        location: loc, mode: j.remote ? 'remote' : '',
-        url: url, posted_date: j.published_on || ''
-      };
+      const valid = self.job_('workable:' + slug, slug, j.title, url, loc,
+        j.remote, j.published_on || '', '');
+      if (valid) valid.mode = j.remote ? 'remote' : '';
+      return valid;
     });
+  },
+
+  job_(source, company, role, url, location, remote, postedDate, descr) {
+    if (!url || !role) return null;
+    const safeUrl = Validation.safeHttpsUrl(url);
+    if (!safeUrl) return null;
+    company = String(company || 'Unknown').slice(0, 200);
+    role = String(role).trim().slice(0, 300);
+    if (!role) return null;
+    return {
+      id: this.hashId_(source, company, role, safeUrl),
+      source: source, company: company, role: role,
+      location: String(location || '').slice(0, 300), mode: remote ? 'remote' : '',
+      url: safeUrl, posted_date: String(postedDate || '').slice(0, 80),
+      descr: String(descr || '').slice(0, 12000)
+    };
   }
 };
 
@@ -1029,6 +1073,9 @@ const Match = {
   scoreQueue(chunk) {
     chunk = chunk || Config.tunable('CHUNK_SIZE');
     const threshold = Number(Config.tunable('SCORE_THRESHOLD'));
+    // DAILY_APPROVAL_N limits new approval rows created by this scoring run.
+    // Rows beyond the limit are scored but remain eligible for the next run.
+    const approvalLimit = Config.tunable('DAILY_APPROVAL_N');
     const pending = Crm.listByStatus('sourced').slice(0, chunk);
     const self = this;
     let scored = 0, queued = 0;
@@ -1036,13 +1083,14 @@ const Match = {
       try {
         const r = self.scoreOne(opp);
         const pass = Number(r.fit_score) >= threshold;
-        const status = pass ? 'queued_for_approval' : 'scored';
+        const canQueue = pass && queued < approvalLimit;
+        const status = canQueue ? 'queued_for_approval' : 'scored';
         Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
           fit_score: r.fit_score, track: r.track, rationale: r.rationale,
           status: status, updated_at: new Date()
         });
         scored++;
-        if (pass) { self.pushToApprovals_(opp, r); queued++; }
+        if (canQueue) { self.pushToApprovals_(opp, r); queued++; }
       } catch (e) {
         Logger.log('score ' + opp.id + ': ' + e);
         if (!e || !e.scoreValidation) {
@@ -1921,19 +1969,19 @@ const SETUP_FIELDS = [
   { type: 'salary', label: 'Salary target net per month, low and high (e.g. 15000, 20000 or R15 000 - R20 000) - private, never shown', target: 'salaryTargetNet' },
   { type: 'text',   label: 'One-line summary of you (feeds fit-scoring and your CV summary)', target: 'summary' },
   { type: 'section', label: 'API KEYS  -  paste each; on Save they move to secure storage and these cells are cleared' },
-  { type: 'prop',   label: 'Gemini API key',                       target: 'GEMINI_API_KEY', secret: true },
-  { type: 'prop',   label: 'Adzuna App ID',                        target: 'ADZUNA_APP_ID' },
-  { type: 'prop',   label: 'Adzuna App Key',                       target: 'ADZUNA_APP_KEY', secret: true },
-  { type: 'prop',   label: 'RapidAPI key (optional, for JSearch)', target: 'RAPIDAPI_KEY', secret: true },
-  { type: 'prop',   label: 'Master CV Google Doc ID (the Doc that contains a {{SUMMARY}} token)', target: 'MASTER_CV_DOC_ID' },
+  { type: 'prop',   label: 'Gemini API key',                       target: Config.KEYS.GEMINI_API_KEY, secret: true },
+  { type: 'prop',   label: 'Adzuna App ID',                        target: Config.KEYS.ADZUNA_APP_ID },
+  { type: 'prop',   label: 'Adzuna App Key',                       target: Config.KEYS.ADZUNA_APP_KEY, secret: true },
+  { type: 'prop',   label: 'RapidAPI key (optional, for JSearch)', target: Config.KEYS.RAPIDAPI_KEY, secret: true },
+  { type: 'prop',   label: 'Master CV Google Doc ID (the Doc that contains a {{SUMMARY}} token)', target: Config.KEYS.MASTER_CV_DOC_ID },
   { type: 'section', label: 'ALERTS  -  optional but recommended' },
-  { type: 'prop',   label: 'Email for failure alerts (blank = alerts have nowhere real to go)', target: 'ALERT_EMAIL', clearable: true },
+  { type: 'prop',   label: 'Email for failure alerts (blank = alerts have nowhere real to go)', target: Config.KEYS.ALERT_EMAIL, clearable: true },
   { type: 'section', label: 'SEARCH FILTERS  -  optional; blank = not set (blanking a filled row clears that filter on Save)' },
-  { type: 'prop',   label: 'Keep ONLY these regions, comma-separated (blank = anywhere)',              target: 'ALLOWED_REGIONS', clearable: true },
-  { type: 'prop',   label: 'Drop these sub-areas even if in range, comma-separated (blank = none)',    target: 'EXCLUDED_REGIONS', clearable: true },
-  { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: 'ALLOW_REMOTE', clearable: true },
-  { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: 'EXCLUDED_DOMAINS', clearable: true },
-  { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: 'TAILOR_FOR_PORTALS', clearable: true },
+  { type: 'prop',   label: 'Keep ONLY these regions, comma-separated (blank = anywhere)',              target: Config.KEYS.ALLOWED_REGIONS, clearable: true },
+  { type: 'prop',   label: 'Drop these sub-areas even if in range, comma-separated (blank = none)',    target: Config.KEYS.EXCLUDED_REGIONS, clearable: true },
+  { type: 'prop',   label: 'Allow remote jobs from anywhere? true/false (default true)',              target: Config.KEYS.ALLOW_REMOTE, clearable: true },
+  { type: 'prop',   label: 'Exclude these job boards, comma-separated e.g. careers24 (blank = none)', target: Config.KEYS.EXCLUDED_DOMAINS, clearable: true },
+  { type: 'prop',   label: 'Tailor CV/cover for portal roles too? true/false; false = email-only (default true)', target: Config.KEYS.TAILOR_FOR_PORTALS, clearable: true },
   { type: 'section', label: 'SAVE' },
   { type: 'save',   label: 'Tick this box to save   (or run applySetup from the Run menu)' },
   { type: 'status', label: 'Status' }
@@ -2183,7 +2231,8 @@ function seedConfigTab_() {
     ['DAILY_SOURCE_CAP', Config.defaults.DAILY_SOURCE_CAP],
     ['DAILY_APPROVAL_N', Config.defaults.DAILY_APPROVAL_N],
     ['CHUNK_SIZE', Config.defaults.CHUNK_SIZE],
-    ['AGENCY_DRAFTS_PER_RUN', Config.defaults.AGENCY_DRAFTS_PER_RUN]
+    ['AGENCY_DRAFTS_PER_RUN', Config.defaults.AGENCY_DRAFTS_PER_RUN],
+    ['MAINTENANCE_CHECKS', Config.defaults.MAINTENANCE_CHECKS]
   ];
   sh.getRange(2, 1, rows.length, 2).setValues(rows);
 }
@@ -2193,7 +2242,7 @@ function seedConfigTab_() {
  * (columns: name,email,focus) and this seeds the Contacts tab from it.
  */
 function seedAgenciesFromSample_() {
-  const csv = Config.get('AGENCIES_CSV');
+  const csv = Config.get(Config.KEYS.AGENCIES_CSV);
   if (!csv) return;
   const contacts = Crm.readAll(Crm.TABS.CONTACTS);
   if (contacts.length > 0) return;
@@ -2240,14 +2289,12 @@ function diagnose() {
         encodeURIComponent('customer service') + '&sort_by=date&max_days_old=21&content-type=application/json';
       const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
       out.push('  HTTP ' + res.getResponseCode());
-      const body = res.getContentText();
       try {
-        const d = JSON.parse(body);
-        if (d.exception) out.push('  exception: ' + d.exception);
-        else out.push('  count: ' + d.count + ', results returned: ' + (d.results ? d.results.length : 0));
-      } catch (e) { out.push('  body: ' + body.slice(0, 200)); }
+        const d = JSON.parse(res.getContentText());
+        out.push('  response shape: ' + (d && Array.isArray(d.results) ? 'valid' : 'unexpected'));
+      } catch (e) { out.push('  response shape: invalid JSON'); }
     }
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== JSearch live test ===');
   try {
@@ -2263,33 +2310,26 @@ function diagnose() {
         headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' }
       });
       out.push('  HTTP ' + res.getResponseCode());
-      const body = res.getContentText();
-      if (res.getResponseCode() !== 200) {
-        // 404/403 here is a RapidAPI subscription/key issue - the body says which.
-        out.push('  body: ' + body.slice(0, 200));
-      } else {
+      if (res.getResponseCode() !== 200) out.push('  response shape: unavailable');
+      else {
         try {
-          const d = JSON.parse(body);
-          const arr = Sources.pickJobs_(d);
-          const n = arr.length;
-          out.push('  results returned: ' + n + (n
-            ? ('  sample link: ' + (arr[0].job_apply_link || '').slice(0, 80))
-            : ('  top-level keys: ' + Object.keys(d).join(',') + '  body: ' + body.slice(0, 200))));
-        } catch (e) { out.push('  body: ' + body.slice(0, 200)); }
+          const d = JSON.parse(res.getContentText());
+          out.push('  response shape: ' + (Sources.pickJobs_(d).length ? 'valid' : 'empty or unexpected'));
+        } catch (e) { out.push('  response shape: invalid JSON'); }
       }
     }
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== Gemini live test ===');
   try {
     const r = Gemini.generate('Reply with exactly: ok', { maxOutputTokens: 10 });
     out.push('  reply: ' + String(r).trim().slice(0, 40));
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== Sheet ===');
   try {
     out.push('  Opportunities rows: ' + Crm.readAll(Crm.TABS.OPPORTUNITIES).length);
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: sheet read failed'); }
 
   const report = out.join('\n');
   Logger.log(report);

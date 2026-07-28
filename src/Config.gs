@@ -12,11 +12,31 @@ const Config = {
     GEMINI_MODEL: 'GEMINI_MODEL',
     ADZUNA_APP_ID: 'ADZUNA_APP_ID',
     ADZUNA_APP_KEY: 'ADZUNA_APP_KEY',
+    // Compatibility alias retained for older installs and diagnostics.
+    ADZUNA_API_KEY: 'ADZUNA_API_KEY',
     RAPIDAPI_KEY: 'RAPIDAPI_KEY',
     SHEET_ID: 'SHEET_ID',
     DRIVE_FOLDER_ID: 'DRIVE_FOLDER_ID',
     MASTER_CV_DOC_ID: 'MASTER_CV_DOC_ID',
-    CANDIDATE_JSON: 'CANDIDATE_JSON'
+    CANDIDATE_JSON: 'CANDIDATE_JSON',
+    AGENCIES_CSV: 'AGENCIES_CSV',
+    ALERT_EMAIL: 'ALERT_EMAIL',
+    ALLOWED_REGIONS: 'ALLOWED_REGIONS',
+    EXCLUDED_REGIONS: 'EXCLUDED_REGIONS',
+    VAGUE_LOCATION_TAGS: 'VAGUE_LOCATION_TAGS',
+    ALLOW_REMOTE: 'ALLOW_REMOTE',
+    EXCLUDED_DOMAINS: 'EXCLUDED_DOMAINS',
+    TAILOR_FOR_PORTALS: 'TAILOR_FOR_PORTALS'
+  },
+
+  // These limits keep a single trigger run bounded even when a Config sheet is
+  // edited by mistake. They are deliberately lower than the Apps Script hard cap.
+  MAXIMA: {
+    CHUNK_SIZE: 25,
+    DAILY_SOURCE_CAP: 250,
+    DAILY_APPROVAL_N: 50,
+    AGENCY_DRAFTS_PER_RUN: 10,
+    MAINTENANCE_CHECKS: 100
   },
 
   props_() {
@@ -51,6 +71,7 @@ const Config = {
     DAILY_APPROVAL_N: 25,      // max items pushed to the Approvals queue per day
     CHUNK_SIZE: 8,             // items processed per trigger run (respects the 6-min cap)
     AGENCY_DRAFTS_PER_RUN: 8,  // agency intro drafts created per run
+    MAINTENANCE_CHECKS: 80,    // link/maintenance checks per run
     FOLLOWUP_DAYS: [3, 7],
     // Where failure-alert emails go (Alerts.gs). Override via a Script Property named
     // ALERT_EMAIL - this placeholder is not a real inbox, and every deployer of this
@@ -68,10 +89,17 @@ const Config = {
       for (let i = 0; i < rows.length; i++) {
         if (rows[i].key === key && rows[i].value !== '' && rows[i].value !== null) {
           const n = Number(rows[i].value);
+          if (this.MAXIMA[key] !== undefined) {
+            if (!isFinite(n) || n < 1) return this.defaults[key];
+            return Math.min(Math.floor(n), this.MAXIMA[key]);
+          }
           return isNaN(n) ? rows[i].value : n;
         }
       }
     } catch (e) { /* sheet not ready yet - use default */ }
+    if (this.MAXIMA[key] !== undefined) {
+      return Math.min(this.defaults[key], this.MAXIMA[key]);
+    }
     return this.defaults[key];
   },
 
@@ -158,7 +186,7 @@ const Config = {
     // Global hard-exclusions that always ship, regardless of config: whatjobs links
     // route to a search page, not the actual listing.
     const ALWAYS = ['whatjobs'];
-    const raw = this.get('EXCLUDED_DOMAINS');
+    const raw = this.get(this.KEYS.EXCLUDED_DOMAINS);
     const user = (raw === null || raw === '') ? []
       : String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
     return ALWAYS.concat(user.filter(function (d) { return ALWAYS.indexOf(d) === -1; }));
@@ -170,7 +198,7 @@ const Config = {
   // located elsewhere, and jobs with no readable location, are dropped. Pair with
   // excludedRegions to carve out sub-areas. Default: EMPTY = no location restriction.
   allowedRegions() {
-    const raw = this.get('ALLOWED_REGIONS');
+    const raw = this.get(this.KEYS.ALLOWED_REGIONS);
     if (raw === null || raw === '') return [];
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
@@ -180,7 +208,7 @@ const Config = {
   // loosely-tagged roles aren't missed - but a string that also names a specific
   // town must match allowedRegions. Override with Script Property VAGUE_LOCATION_TAGS.
   vagueLocationTags() {
-    const raw = this.get('VAGUE_LOCATION_TAGS');
+    const raw = this.get(this.KEYS.VAGUE_LOCATION_TAGS);
     const src = (raw !== null && raw !== '') ? raw : 'gauteng,south africa,za';
     return String(src).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
@@ -189,7 +217,7 @@ const Config = {
   // Property EXCLUDED_REGIONS (e.g. "pretoria,vaal"). Dropped unless the job is
   // remote. Default: EMPTY = exclude nothing.
   excludedRegions() {
-    const raw = this.get('EXCLUDED_REGIONS');
+    const raw = this.get(this.KEYS.EXCLUDED_REGIONS);
     if (raw === null || raw === '') return [];
     return String(raw).split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
   },
@@ -197,7 +225,7 @@ const Config = {
   // Keep remote jobs from anywhere. Script Property ALLOW_REMOTE ("false" to disable).
   // Default: true.
   allowRemote() {
-    const raw = this.get('ALLOW_REMOTE');
+    const raw = this.get(this.KEYS.ALLOW_REMOTE);
     if (raw === null || raw === '') return true;
     return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
   },
@@ -206,7 +234,7 @@ const Config = {
   // Script Property TAILOR_FOR_PORTALS ("false" = tailor email applications only).
   // Default: true (tailor for portals too).
   tailorForPortals() {
-    const raw = this.get('TAILOR_FOR_PORTALS');
+    const raw = this.get(this.KEYS.TAILOR_FOR_PORTALS);
     if (raw === null || raw === '') return true;
     return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
   }

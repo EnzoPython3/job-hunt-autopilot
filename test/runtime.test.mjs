@@ -8,6 +8,7 @@ import { loadGs } from './helpers/load-gs.mjs';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function loadConfig(properties = {}, configRows = []) {
+  if (!configRows.length) configRows = Object.entries(properties).map(([key, value]) => ({ key, value }));
   return loadGs(resolve(ROOT, 'src/Config.gs'), {
     services: {
       PropertiesService: {
@@ -17,7 +18,7 @@ function loadConfig(properties = {}, configRows = []) {
           deleteProperty: (key) => { delete properties[key]; }
         })
       },
-      Crm: { readAll: () => configRows },
+      Crm: { TABS: { CONFIG: 'Config' }, readAll: () => configRows },
       Logger: { log: () => {} }
     },
     names: ['Config']
@@ -69,7 +70,7 @@ test('Onboarding property fields use the central Config key map', () => {
     names: ['SETUP_FIELDS']
   });
   const propertyTargets = SETUP_FIELDS.filter((field) => field.type === 'prop').map((field) => field.target);
-  assert.deepEqual(propertyTargets, [
+  assert.equal(JSON.stringify(propertyTargets), JSON.stringify([
     Config.KEYS.GEMINI_API_KEY,
     Config.KEYS.ADZUNA_APP_ID,
     Config.KEYS.ADZUNA_APP_KEY,
@@ -81,7 +82,7 @@ test('Onboarding property fields use the central Config key map', () => {
     Config.KEYS.ALLOW_REMOTE,
     Config.KEYS.EXCLUDED_DOMAINS,
     Config.KEYS.TAILOR_FOR_PORTALS
-  ]);
+  ]));
 });
 
 test('Match limits new approval rows per scoring run', () => {

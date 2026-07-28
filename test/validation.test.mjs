@@ -20,6 +20,18 @@ test('safeHttpsUrl accepts and normalises HTTPS URLs', () => {
     'https://example.com/openings?id=7#apply'
   );
   assert.equal(Validation.safeHttpsUrl('https://jobs.example.test/path?q=a%20b'), 'https://jobs.example.test/path?q=a%20b');
+  assert.equal(Validation.safeHttpsUrl('https://[2001:db8::1]/jobs'), 'https://[2001:db8::1]/jobs');
+  assert.equal(Validation.safeHttpsUrl('https://[::1]:443/jobs'), 'https://[::1]/jobs');
+});
+
+test('safeHttpsUrl rejects malformed bracketed IPv6 hosts', () => {
+  for (const value of [
+    'https://[:::1]/',
+    'https://[1:2:3:4:5:6:7:8:9]/',
+    'https://[1::2::3]/'
+  ]) {
+    assert.equal(Validation.safeHttpsUrl(value), '', `expected rejection for ${value}`);
+  }
 });
 
 test('safeHttpsUrl rejects unsafe schemes, malformed values, empty values, and credentials', () => {
@@ -101,6 +113,13 @@ test('isEmail rejects control characters, whitespace injection, malformed and un
     'a'.repeat(250) + '@example.com'
   ]) {
     assert.equal(Validation.isEmail(value), false, `expected rejection for ${JSON.stringify(value)}`);
+  }
+});
+
+test('safeHttpsUrl and isEmail reject C1 control characters', () => {
+  for (const control of ['\u0080', '\u009f']) {
+    assert.equal(Validation.safeHttpsUrl('https://example.com/' + control), '');
+    assert.equal(Validation.isEmail('person' + control + '@example.com'), false);
   }
 });
 

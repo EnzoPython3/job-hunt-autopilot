@@ -89,42 +89,47 @@ function diagnose() {
  * Capped per run to stay under the 6-minute limit; re-run until it reports 0 remaining.
  */
 function pruneDeadLinks() {
-  Crm.ensureSchema();
-  const MAX_CHECKS = 80;                          // lower cap: slow redirect-follows add up
-  const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
-  let budget = MAX_CHECKS;
-  let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;
+  try {
+    Crm.ensureSchema();
+    const MAX_CHECKS = 80;                          // lower cap: slow redirect-follows add up
+    const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
+    let budget = MAX_CHECKS;
+    let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;
 
-  Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) {
-    if (!o.url || o.status === 'dead_link') return;
-    if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
-    budget--; oppChecked++;
-    if (!Sources.linkAlive_(o.url)) {
-      Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
-        status: 'dead_link',
-        notes: String(o.notes || '') + ' [pruned: dead link]',
-        updated_at: new Date()
-      });
-      oppDead++;
-    }
-  });
+    Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) {
+      if (!o.url || o.status === 'dead_link') return;
+      if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
+      budget--; oppChecked++;
+      if (!Sources.linkAlive_(o.url)) {
+        Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
+          status: 'dead_link',
+          notes: String(o.notes || '') + ' [pruned: dead link]',
+          updated_at: new Date()
+        });
+        oppDead++;
+      }
+    });
 
-  Crm.readAll(Crm.TABS.APPROVALS).forEach(function (a) {
-    if (!a.url || String(a.decision || '').trim()) return;   // leave already-decided rows alone
-    if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
-    budget--; apprChecked++;
-    if (!Sources.linkAlive_(a.url)) {
-      Crm.updateRow(Crm.TABS.APPROVALS, a._row, {
-        decision: 'Skip - dead link',
-        edited_notes: String(a.edited_notes || '') + ' [pruned: dead link]'
-      });
-      apprDead++;
-    }
-  });
+    Crm.readAll(Crm.TABS.APPROVALS).forEach(function (a) {
+      if (!a.url || String(a.decision || '').trim()) return;   // leave already-decided rows alone
+      if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
+      budget--; apprChecked++;
+      if (!Sources.linkAlive_(a.url)) {
+        Crm.updateRow(Crm.TABS.APPROVALS, a._row, {
+          decision: 'Skip - dead link',
+          edited_notes: String(a.edited_notes || '') + ' [pruned: dead link]'
+        });
+        apprDead++;
+      }
+    });
 
-  const report = 'pruneDeadLinks: Opportunities ' + oppDead + '/' + oppChecked + ' dead; ' +
-    'Approvals ' + apprDead + '/' + apprChecked + ' dead.' +
-    (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
-  Logger.log(report);
-  return report;
+    const report = 'pruneDeadLinks: Opportunities ' + oppDead + '/' + oppChecked + ' dead; ' +
+      'Approvals ' + apprDead + '/' + apprChecked + ' dead.' +
+      (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
+    Logger.log(report);
+    return report;
+  } catch (e) {
+    Alerts.notify('pruneDeadLinks', e);
+    throw e;
+  }
 }

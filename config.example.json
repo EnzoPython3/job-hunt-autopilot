@@ -1,7 +1,7 @@
 {
   "_comment": "Reference only. These go into Apps Script > Project Settings > Script Properties. Do NOT commit real keys. The Adzuna secret may be named ADZUNA_APP_KEY or ADZUNA_API_KEY - both are accepted.",
   "GEMINI_API_KEY": "your-google-gemini-api-key",
-  "GEMINI_MODEL": "gemini-2.5-flash",
+  "GEMINI_MODEL": "gemini-flash-latest",
   "ADZUNA_APP_ID": "your-adzuna-app-id",
   "ADZUNA_APP_KEY": "your-adzuna-app-key",
   "RAPIDAPI_KEY": "your-rapidapi-key-subscribed-to-JSearch (jsearch.p.rapidapi.com) - covers Indeed/LinkedIn/Glassdoor/PNet; leave unset to disable that source",
@@ -9,5 +9,6 @@
   "SHEET_ID": "auto-set-by-setupProject()",
   "DRIVE_FOLDER_ID": "auto-set-by-setupProject()",
   "CANDIDATE_JSON": "optional - a JSON string overriding the default candidate profile in Config.gs",
-  "AGENCIES_CSV": "optional - a name,email,focus CSV string to seed the Contacts tab on setup"
+  "AGENCIES_CSV": "optional - a name,email,focus CSV string to seed the Contacts tab on setup",
+  "ALERT_EMAIL": "optional - your email address; where failure-alert emails from scheduled trigger runs are sent (defaults to a placeholder, see Alerts.gs)"
 }

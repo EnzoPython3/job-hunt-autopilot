@@ -56,13 +56,17 @@ const Config = {
 
   // --- Safe defaults; override any of these via the "Config" sheet tab ---
   defaults: {
-    GEMINI_MODEL: 'gemini-2.5-flash',
+    GEMINI_MODEL: 'gemini-flash-latest',
     SCORE_THRESHOLD: 62,       // minimum fit score (0-100) to queue for approval
     DAILY_SOURCE_CAP: 120,     // max new jobs ingested per day
     DAILY_APPROVAL_N: 25,      // max items pushed to the Approvals queue per day
     CHUNK_SIZE: 8,             // items processed per trigger run (respects the 6-min cap)
     AGENCY_DRAFTS_PER_RUN: 8,  // agency intro drafts created per run
-    FOLLOWUP_DAYS: [3, 7]
+    FOLLOWUP_DAYS: [3, 7],
+    // Where failure-alert emails go (Alerts.gs). Override via a Script Property named
+    // ALERT_EMAIL - this placeholder is not a real inbox, and every deployer of this
+    // public template needs to set their own address.
+    ALERT_EMAIL: 'you@example.com'
   },
 
   /**
@@ -216,6 +220,32 @@ const Config = {
     const raw = this.get('TAILOR_FOR_PORTALS');
     if (raw === null || raw === '') return true;
     return String(raw).toLowerCase() !== 'false' && String(raw) !== '0';
+  }
+};
+
+
+// ======================================================================
+// Alerts.gs
+// ======================================================================
+
+/**
+ * Alerts.gs - failure notification emails for scheduled trigger runs.
+ */
+const Alerts = {
+  notify(fnName, err) {
+    try {
+      const to = Config.get('ALERT_EMAIL') || Config.defaults.ALERT_EMAIL;
+      MailApp.sendEmail({
+        to: to,
+        subject: 'Job-Hunt Autopilot: ' + fnName + ' failed',
+        body: 'The scheduled job "' + fnName + '" failed:\n\n' +
+          (err && err.stack ? err.stack : String(err)) +
+          '\n\nCheck the Apps Script execution log for full details.',
+        name: 'Job-Hunt Autopilot'
+      });
+    } catch (e) {
+      Logger.log('Alerts.notify: failed to send alert email: ' + e);
+    }
   }
 };
 
@@ -1273,52 +1303,52 @@ const Outreach = {
  * outreach in your name - employer emails still stay as human-approved drafts.
  */
 function morningDigest() {
-  Crm.ensureSchema();
-
-  const pending = Crm.readAll(Crm.TABS.APPROVALS).filter(function (a) {
-    return !String(a.decision || '').trim();
-  });
-  if (!pending.length) {
-    Logger.log('morningDigest: nothing to review - no email sent.');
-    return;
-  }
-
-  pending.sort(function (a, b) { return Number(b.fit_score) - Number(a.fit_score); });
-
-  const cand = Config.candidate();
-  const sheetUrl = SpreadsheetApp.openById(Config.require(Config.KEYS.SHEET_ID)).getUrl();
-  const noun = pending.length === 1 ? 'role' : 'roles';
-
-  const rows = pending.map(function (a) {
-    return '<tr>' +
-      '<td style="padding:6px 10px;border-bottom:1px solid #eee;"><b>' + htmlEscape_(a.fit_score) + '</b></td>' +
-      '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.role) + '</td>' +
-      '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.company) + '</td>' +
-      '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.track) + '</td>' +
-      '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + (a.url ? '<a href="' + htmlEscape_(a.url) + '">view</a>' : '') + '</td>' +
-      '</tr>';
-  }).join('');
-
-  const html = '<div style="font-family:Arial,Helvetica,sans-serif;color:#333;">' +
-    '<h2 style="margin:0 0 2px;">Good morning, ' + htmlEscape_(cand.firstName) + '</h2>' +
-    '<p style="margin:0 0 12px;color:#555;">' + pending.length + ' new ' + noun + ' to review.</p>' +
-    '<table style="border-collapse:collapse;font-size:14px;">' +
-    '<tr>' +
-    '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Fit</th>' +
-    '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Role</th>' +
-    '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Company</th>' +
-    '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Track</th>' +
-    '<th style="border-bottom:2px solid #ccc;"></th>' +
-    '</tr>' + rows + '</table>' +
-    '<p style="margin:16px 0;"><a href="' + htmlEscape_(sheetUrl) + '" style="background:#6b6b6b;color:#fff;padding:9px 16px;border-radius:4px;text-decoration:none;">Open the Approvals sheet</a></p>' +
-    '<p style="font-size:12px;color:#888;">Type "Approve" in the decision column for the ones you want. Tailored CVs, cover letters and email drafts are then prepared automatically.</p>' +
-    '</div>';
-
-  const plain = 'Good morning ' + cand.firstName + '\n\n' + pending.length + ' new ' + noun + ' to review:\n' +
-    pending.map(function (a) { return '  [' + a.fit_score + '] ' + a.role + ' @ ' + a.company + '  ' + (a.url || ''); }).join('\n') +
-    '\n\nApprovals sheet: ' + sheetUrl;
-
   try {
+    Crm.ensureSchema();
+
+    const pending = Crm.readAll(Crm.TABS.APPROVALS).filter(function (a) {
+      return !String(a.decision || '').trim();
+    });
+    if (!pending.length) {
+      Logger.log('morningDigest: nothing to review - no email sent.');
+      return;
+    }
+
+    pending.sort(function (a, b) { return Number(b.fit_score) - Number(a.fit_score); });
+
+    const cand = Config.candidate();
+    const sheetUrl = SpreadsheetApp.openById(Config.require(Config.KEYS.SHEET_ID)).getUrl();
+    const noun = pending.length === 1 ? 'role' : 'roles';
+
+    const rows = pending.map(function (a) {
+      return '<tr>' +
+        '<td style="padding:6px 10px;border-bottom:1px solid #eee;"><b>' + htmlEscape_(a.fit_score) + '</b></td>' +
+        '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.role) + '</td>' +
+        '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.company) + '</td>' +
+        '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.track) + '</td>' +
+        '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + (a.url ? '<a href="' + htmlEscape_(a.url) + '">view</a>' : '') + '</td>' +
+        '</tr>';
+    }).join('');
+
+    const html = '<div style="font-family:Arial,Helvetica,sans-serif;color:#333;">' +
+      '<h2 style="margin:0 0 2px;">Good morning, ' + htmlEscape_(cand.firstName) + '</h2>' +
+      '<p style="margin:0 0 12px;color:#555;">' + pending.length + ' new ' + noun + ' to review.</p>' +
+      '<table style="border-collapse:collapse;font-size:14px;">' +
+      '<tr>' +
+      '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Fit</th>' +
+      '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Role</th>' +
+      '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Company</th>' +
+      '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Track</th>' +
+      '<th style="border-bottom:2px solid #ccc;"></th>' +
+      '</tr>' + rows + '</table>' +
+      '<p style="margin:16px 0;"><a href="' + htmlEscape_(sheetUrl) + '" style="background:#6b6b6b;color:#fff;padding:9px 16px;border-radius:4px;text-decoration:none;">Open the Approvals sheet</a></p>' +
+      '<p style="font-size:12px;color:#888;">Type "Approve" in the decision column for the ones you want. Tailored CVs, cover letters and email drafts are then prepared automatically.</p>' +
+      '</div>';
+
+    const plain = 'Good morning ' + cand.firstName + '\n\n' + pending.length + ' new ' + noun + ' to review:\n' +
+      pending.map(function (a) { return '  [' + a.fit_score + '] ' + a.role + ' @ ' + a.company + '  ' + (a.url || ''); }).join('\n') +
+      '\n\nApprovals sheet: ' + sheetUrl;
+
     MailApp.sendEmail({
       to: cand.email,
       subject: 'Job digest: ' + pending.length + ' new ' + noun + ' to review',
@@ -1330,7 +1360,8 @@ function morningDigest() {
   } catch (e) {
     // Almost always a missing send_mail authorisation - re-run the project
     // once from the editor and grant permissions, then re-install triggers.
-    Logger.log('morningDigest: SEND FAILED (' + cand.email + '): ' + e);
+    Logger.log('morningDigest: FAILED: ' + e);
+    Alerts.notify('morningDigest', e);
     throw e;
   }
 }
@@ -1467,15 +1498,25 @@ const Report = {
  */
 
 function dailySource() {
-  Crm.ensureSchema();
-  const added = Sources.ingest(Config.tunable('DAILY_SOURCE_CAP'));
-  Logger.log('dailySource: added ' + added + ' new opportunities');
+  try {
+    Crm.ensureSchema();
+    const added = Sources.ingest(Config.tunable('DAILY_SOURCE_CAP'));
+    Logger.log('dailySource: added ' + added + ' new opportunities');
+  } catch (e) {
+    Alerts.notify('dailySource', e);
+    throw e;
+  }
 }
 
 function scoreQueue() {
-  Crm.ensureSchema();
-  const r = Match.scoreQueue(Config.tunable('CHUNK_SIZE'));
-  Logger.log('scoreQueue: scored ' + r.scored + ', queued ' + r.queued);
+  try {
+    Crm.ensureSchema();
+    const r = Match.scoreQueue(Config.tunable('CHUNK_SIZE'));
+    Logger.log('scoreQueue: scored ' + r.scored + ', queued ' + r.queued);
+  } catch (e) {
+    Alerts.notify('scoreQueue', e);
+    throw e;
+  }
 }
 
 /**
@@ -1484,56 +1525,61 @@ function scoreQueue() {
  * Nothing is sent - the human sends from Gmail / submits portals manually.
  */
 function prepApprovedBatch() {
-  Crm.ensureSchema();
-  const approvals = Crm.readAll(Crm.TABS.APPROVALS).filter(function (a) {
-    return String(a.decision).trim().toLowerCase() === 'approve';
-  });
+  try {
+    Crm.ensureSchema();
+    const approvals = Crm.readAll(Crm.TABS.APPROVALS).filter(function (a) {
+      return String(a.decision).trim().toLowerCase() === 'approve';
+    });
 
-  let done = 0;
-  const cap = Config.tunable('CHUNK_SIZE');
-  for (let i = 0; i < approvals.length && done < cap; i++) {
-    const a = approvals[i];
-    const opp = Crm.findOpportunity(a.id);
-    if (!opp) continue;
-    if (['drafted', 'submitted', 'sent'].indexOf(opp.status) !== -1) continue;
+    let done = 0;
+    const cap = Config.tunable('CHUNK_SIZE');
+    for (let i = 0; i < approvals.length && done < cap; i++) {
+      const a = approvals[i];
+      const opp = Crm.findOpportunity(a.id);
+      if (!opp) continue;
+      if (['drafted', 'submitted', 'sent'].indexOf(opp.status) !== -1) continue;
 
-    // Portal-only roles (no contact email): tailor a CV + cover only if the
-    // TAILOR_FOR_PORTALS setting is on. Otherwise flag for manual application.
-    if (!opp.contact_email && !Config.tailorForPortals()) {
-      Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
-        status: 'drafted',
-        notes: 'Portal role - apply manually via the job link (tailored docs skipped by setting).',
-        updated_at: new Date()
-      });
-      done++;
-      continue;
-    }
-
-    try {
-      const cv = Tailor.tailorCv(opp);
-      const cover = Tailor.coverLetter(opp);
-
-      let outreachRef = '';
-      let note = 'Ready. Submit via the job link.';
-      if (opp.contact_email) {
-        const cvBlob = DriveApp.getFileById(cv.pdfId).getBlob();
-        const draftId = Outreach.draftFor(opp, { attachments: [cvBlob] });
-        outreachRef = draftId ? ('gmail-draft:' + draftId) : '';
-        note = 'Gmail draft created (review + send).';
-      } else {
-        note = 'Portal role - submit manually via the job link with the tailored CV + cover.';
+      // Portal-only roles (no contact email): tailor a CV + cover only if the
+      // TAILOR_FOR_PORTALS setting is on. Otherwise flag for manual application.
+      if (!opp.contact_email && !Config.tailorForPortals()) {
+        Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
+          status: 'drafted',
+          notes: 'Portal role - apply manually via the job link (tailored docs skipped by setting).',
+          updated_at: new Date()
+        });
+        done++;
+        continue;
       }
 
-      Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
-        cv_pdf_url: cv.pdfUrl, cover_url: cover.pdfUrl, outreach_draft_url: outreachRef,
-        status: 'drafted', notes: note, updated_at: new Date()
-      });
-      done++;
-    } catch (e) {
-      Logger.log('prep ' + a.id + ': ' + e);
+      try {
+        const cv = Tailor.tailorCv(opp);
+        const cover = Tailor.coverLetter(opp);
+
+        let outreachRef = '';
+        let note = 'Ready. Submit via the job link.';
+        if (opp.contact_email) {
+          const cvBlob = DriveApp.getFileById(cv.pdfId).getBlob();
+          const draftId = Outreach.draftFor(opp, { attachments: [cvBlob] });
+          outreachRef = draftId ? ('gmail-draft:' + draftId) : '';
+          note = 'Gmail draft created (review + send).';
+        } else {
+          note = 'Portal role - submit manually via the job link with the tailored CV + cover.';
+        }
+
+        Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
+          cv_pdf_url: cv.pdfUrl, cover_url: cover.pdfUrl, outreach_draft_url: outreachRef,
+          status: 'drafted', notes: note, updated_at: new Date()
+        });
+        done++;
+      } catch (e) {
+        Logger.log('prep ' + a.id + ': ' + e);
+      }
     }
+    Logger.log('prepApprovedBatch: prepared ' + done);
+  } catch (e) {
+    Alerts.notify('prepApprovedBatch', e);
+    throw e;
   }
-  Logger.log('prepApprovedBatch: prepared ' + done);
 }
 
 /**
@@ -1541,32 +1587,37 @@ function prepApprovedBatch() {
  * a contact email and no response yet. Markers in `notes` prevent duplicates.
  */
 function followUps() {
-  Crm.ensureSchema();
-  const days = Config.defaults.FOLLOWUP_DAYS; // [3, 7]
-  const now = new Date();
-  const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
-    return (o.status === 'sent' || o.status === 'submitted') && o.contact_email && !o.response;
-  });
+  try {
+    Crm.ensureSchema();
+    const days = Config.defaults.FOLLOWUP_DAYS; // [3, 7]
+    const now = new Date();
+    const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
+      return (o.status === 'sent' || o.status === 'submitted') && o.contact_email && !o.response;
+    });
 
-  let n = 0;
-  rows.forEach(function (o) {
-    const applied = o.applied_date ? new Date(o.applied_date) : null;
-    if (!applied || isNaN(applied.getTime())) return;
-    const ageDays = (now - applied) / 86400000;
-    const notes = String(o.notes || '');
-    try {
-      if (ageDays >= days[1] && notes.indexOf('[fu7]') === -1) {
-        Outreach.draftFollowUp(o, 'a week');
-        Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, { notes: (notes + ' [fu7]').trim(), updated_at: now });
-        n++;
-      } else if (ageDays >= days[0] && notes.indexOf('[fu3]') === -1) {
-        Outreach.draftFollowUp(o, 'a few days');
-        Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, { notes: (notes + ' [fu3]').trim(), updated_at: now });
-        n++;
-      }
-    } catch (e) { Logger.log('followUp ' + o.id + ': ' + e); }
-  });
-  Logger.log('followUps: drafted ' + n + ' follow-up(s)');
+    let n = 0;
+    rows.forEach(function (o) {
+      const applied = o.applied_date ? new Date(o.applied_date) : null;
+      if (!applied || isNaN(applied.getTime())) return;
+      const ageDays = (now - applied) / 86400000;
+      const notes = String(o.notes || '');
+      try {
+        if (ageDays >= days[1] && notes.indexOf('[fu7]') === -1) {
+          Outreach.draftFollowUp(o, 'a week');
+          Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, { notes: (notes + ' [fu7]').trim(), updated_at: now });
+          n++;
+        } else if (ageDays >= days[0] && notes.indexOf('[fu3]') === -1) {
+          Outreach.draftFollowUp(o, 'a few days');
+          Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, { notes: (notes + ' [fu3]').trim(), updated_at: now });
+          n++;
+        }
+      } catch (e) { Logger.log('followUp ' + o.id + ': ' + e); }
+    });
+    Logger.log('followUps: drafted ' + n + ' follow-up(s)');
+  } catch (e) {
+    Alerts.notify('followUps', e);
+    throw e;
+  }
 }
 
 /**
@@ -1574,28 +1625,38 @@ function followUps() {
  * doesn't have one yet (a marker + link is written into `notes`).
  */
 function prepInterviews() {
-  Crm.ensureSchema();
-  const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
-    return o.status === 'interview' && String(o.notes || '').indexOf('[prepped]') === -1;
-  });
-  let n = 0;
-  const cap = Config.tunable('CHUNK_SIZE');
-  for (let i = 0; i < rows.length && n < cap; i++) {
-    const o = rows[i];
-    try {
-      const r = InterviewPrep.generateFor(o);
-      Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
-        notes: (String(o.notes || '') + ' [prepped] ' + r.docUrl).trim(), updated_at: new Date()
-      });
-      n++;
-    } catch (e) { Logger.log('prepInterviews ' + o.id + ': ' + e); }
+  try {
+    Crm.ensureSchema();
+    const rows = Crm.readAll(Crm.TABS.OPPORTUNITIES).filter(function (o) {
+      return o.status === 'interview' && String(o.notes || '').indexOf('[prepped]') === -1;
+    });
+    let n = 0;
+    const cap = Config.tunable('CHUNK_SIZE');
+    for (let i = 0; i < rows.length && n < cap; i++) {
+      const o = rows[i];
+      try {
+        const r = InterviewPrep.generateFor(o);
+        Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
+          notes: (String(o.notes || '') + ' [prepped] ' + r.docUrl).trim(), updated_at: new Date()
+        });
+        n++;
+      } catch (e) { Logger.log('prepInterviews ' + o.id + ': ' + e); }
+    }
+    Logger.log('prepInterviews: generated ' + n + ' prep pack(s)');
+  } catch (e) {
+    Alerts.notify('prepInterviews', e);
+    throw e;
   }
-  Logger.log('prepInterviews: generated ' + n + ' prep pack(s)');
 }
 
 function weeklyReport() {
-  Crm.ensureSchema();
-  Report.sendWeekly();
+  try {
+    Crm.ensureSchema();
+    Report.sendWeekly();
+  } catch (e) {
+    Alerts.notify('weeklyReport', e);
+    throw e;
+  }
 }
 
 // Draft agency intro emails (run manually or on a light schedule).
@@ -2180,44 +2241,49 @@ function diagnose() {
  * Capped per run to stay under the 6-minute limit; re-run until it reports 0 remaining.
  */
 function pruneDeadLinks() {
-  Crm.ensureSchema();
-  const MAX_CHECKS = 80;                          // lower cap: slow redirect-follows add up
-  const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
-  let budget = MAX_CHECKS;
-  let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;
+  try {
+    Crm.ensureSchema();
+    const MAX_CHECKS = 80;                          // lower cap: slow redirect-follows add up
+    const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
+    let budget = MAX_CHECKS;
+    let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;
 
-  Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) {
-    if (!o.url || o.status === 'dead_link') return;
-    if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
-    budget--; oppChecked++;
-    if (!Sources.linkAlive_(o.url)) {
-      Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
-        status: 'dead_link',
-        notes: String(o.notes || '') + ' [pruned: dead link]',
-        updated_at: new Date()
-      });
-      oppDead++;
-    }
-  });
+    Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) {
+      if (!o.url || o.status === 'dead_link') return;
+      if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
+      budget--; oppChecked++;
+      if (!Sources.linkAlive_(o.url)) {
+        Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
+          status: 'dead_link',
+          notes: String(o.notes || '') + ' [pruned: dead link]',
+          updated_at: new Date()
+        });
+        oppDead++;
+      }
+    });
 
-  Crm.readAll(Crm.TABS.APPROVALS).forEach(function (a) {
-    if (!a.url || String(a.decision || '').trim()) return;   // leave already-decided rows alone
-    if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
-    budget--; apprChecked++;
-    if (!Sources.linkAlive_(a.url)) {
-      Crm.updateRow(Crm.TABS.APPROVALS, a._row, {
-        decision: 'Skip - dead link',
-        edited_notes: String(a.edited_notes || '') + ' [pruned: dead link]'
-      });
-      apprDead++;
-    }
-  });
+    Crm.readAll(Crm.TABS.APPROVALS).forEach(function (a) {
+      if (!a.url || String(a.decision || '').trim()) return;   // leave already-decided rows alone
+      if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
+      budget--; apprChecked++;
+      if (!Sources.linkAlive_(a.url)) {
+        Crm.updateRow(Crm.TABS.APPROVALS, a._row, {
+          decision: 'Skip - dead link',
+          edited_notes: String(a.edited_notes || '') + ' [pruned: dead link]'
+        });
+        apprDead++;
+      }
+    });
 
-  const report = 'pruneDeadLinks: Opportunities ' + oppDead + '/' + oppChecked + ' dead; ' +
-    'Approvals ' + apprDead + '/' + apprChecked + ' dead.' +
-    (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
-  Logger.log(report);
-  return report;
+    const report = 'pruneDeadLinks: Opportunities ' + oppDead + '/' + oppChecked + ' dead; ' +
+      'Approvals ' + apprDead + '/' + apprChecked + ' dead.' +
+      (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
+    Logger.log(report);
+    return report;
+  } catch (e) {
+    Alerts.notify('pruneDeadLinks', e);
+    throw e;
+  }
 }
 
 

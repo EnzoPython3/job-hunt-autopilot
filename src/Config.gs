@@ -45,13 +45,17 @@ const Config = {
 
   // --- Safe defaults; override any of these via the "Config" sheet tab ---
   defaults: {
-    GEMINI_MODEL: 'gemini-2.5-flash',
+    GEMINI_MODEL: 'gemini-flash-latest',
     SCORE_THRESHOLD: 62,       // minimum fit score (0-100) to queue for approval
     DAILY_SOURCE_CAP: 120,     // max new jobs ingested per day
     DAILY_APPROVAL_N: 25,      // max items pushed to the Approvals queue per day
     CHUNK_SIZE: 8,             // items processed per trigger run (respects the 6-min cap)
     AGENCY_DRAFTS_PER_RUN: 8,  // agency intro drafts created per run
-    FOLLOWUP_DAYS: [3, 7]
+    FOLLOWUP_DAYS: [3, 7],
+    // Where failure-alert emails go (Alerts.gs). Override via a Script Property named
+    // ALERT_EMAIL - this placeholder is not a real inbox, and every deployer of this
+    // public template needs to set their own address.
+    ALERT_EMAIL: 'you@example.com'
   },
 
   /**

@@ -27,7 +27,7 @@ If `clasp create` wrote its own `.clasp.json`, make sure it has `"rootDir": "src
 ## 3. Set Script Properties (secrets + your profile)
 Apps Script editor -> Project Settings (gear) -> Script Properties -> add:
 - `GEMINI_API_KEY` - from Google AI Studio (aistudio.google.com/app/apikey)
-- `GEMINI_MODEL` - optional, defaults to `gemini-2.5-flash`
+- `GEMINI_MODEL` - optional, defaults to `gemini-flash-latest`
 - `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` (or `ADZUNA_API_KEY`) - free dev keys from https://developer.adzuna.com
 - `RAPIDAPI_KEY` - from https://rapidapi.com after subscribing to **JSearch** (jsearch.p.rapidapi.com).
   Adds Indeed/LinkedIn/Glassdoor/PNet coverage. Free tier (~200 calls/month) covers ~4
@@ -36,6 +36,8 @@ Apps Script editor -> Project Settings (gear) -> Script Properties -> add:
 - `CANDIDATE_JSON` - **your profile** as a JSON string (name, email, phone, location,
   linkedin, tracks, geos, keywords, salaryTargetNet, summary). If set it overrides the
   default in `src/Config.gs`. See `config.example.json` for the shape.
+- `ALERT_EMAIL` - optional, your email address for failure-alert emails when a scheduled
+  trigger run errors out; defaults to a placeholder (see `src/Alerts.gs`)
 
 (`SHEET_ID` and `DRIVE_FOLDER_ID` are created for you in step 5.)
 

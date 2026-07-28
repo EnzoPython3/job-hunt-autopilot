@@ -95,7 +95,13 @@ const Outreach = {
         this.persist_(Crm.TABS.CONTACTS, a, { draft_id: draftId, last_contacted: new Date(), failure_message: '' });
         n++;
       } catch (e) {
-        failures.push(Runtime.failure('agency:' + String(a.id || a._row), e));
+        const failure = Runtime.failure('agency:' + String(a.id || a._row), e);
+        try {
+          this.persist_(Crm.TABS.CONTACTS, a, { failure_message: failure.message });
+        } catch (persistError) {
+          failures.push(Runtime.failure('agency failure persistence:' + String(a.id || a._row), persistError));
+        }
+        failures.push(failure);
       } finally {
         if (claimToken && Crm.releaseClaim) {
           try { Crm.releaseClaim(Crm.TABS.CONTACTS, contactId, claimToken); }

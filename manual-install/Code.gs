@@ -335,11 +335,36 @@ const Alerts = {
 function alertText_(value, maximum) {
   let text = '';
   try { text = String(value || ''); } catch (e) { text = 'Unknown failure'; }
+  alertSecrets_().forEach(function (secret) {
+    if (secret.length >= 3) text = text.split(secret).join('[REDACTED]');
+  });
   text = text.replace(/https?:\/\/[^\s<>"']+/gi, '[URL]');
   text = text.replace(/\b(?:gemini|adzuna|rapidapi)?[_-]?(?:api\s*[_-]?key|app\s*[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi, '[REDACTED]');
   text = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (text.length > maximum) text = text.slice(0, maximum - 3) + '...';
   return text || 'Unknown failure';
+}
+
+function alertSecrets_() {
+  const values = [];
+  const add = function (value) {
+    if (value !== null && value !== undefined && String(value)) values.push(String(value));
+  };
+  try {
+    const keys = Config && Config.KEYS ? Object.keys(Config.KEYS) : [];
+    keys.forEach(function (label) {
+      if (!/(KEY|SECRET|TOKEN|PASSWORD)/i.test(label)) return;
+      try { add(Config.get(Config.KEYS[label])); } catch (e) { /* ignore unavailable properties */ }
+    });
+  } catch (e) { /* ignore incomplete test or install configuration */ }
+  try {
+    const props = PropertiesService.getScriptProperties().getProperties();
+    Object.keys(props || {}).forEach(function (label) {
+      if (/(KEY|SECRET|TOKEN|PASSWORD)/i.test(label)) add(props[label]);
+    });
+  } catch (e) { /* ignore unavailable PropertiesService */ }
+  values.sort(function (a, b) { return b.length - a.length; });
+  return values;
 }
 
 
@@ -1675,7 +1700,13 @@ const Outreach = {
         this.persist_(Crm.TABS.CONTACTS, a, { draft_id: draftId, last_contacted: new Date(), failure_message: '' });
         n++;
       } catch (e) {
-        failures.push(Runtime.failure('agency:' + String(a.id || a._row), e));
+        const failure = Runtime.failure('agency:' + String(a.id || a._row), e);
+        try {
+          this.persist_(Crm.TABS.CONTACTS, a, { failure_message: failure.message });
+        } catch (persistError) {
+          failures.push(Runtime.failure('agency failure persistence:' + String(a.id || a._row), persistError));
+        }
+        failures.push(failure);
       } finally {
         if (claimToken && Crm.releaseClaim) {
           try { Crm.releaseClaim(Crm.TABS.CONTACTS, contactId, claimToken); }

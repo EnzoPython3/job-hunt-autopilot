@@ -7,6 +7,18 @@
  */
 function morningDigest() {
   try {
+    const run = function () { return morningDigest_(); };
+    return (typeof Runtime !== 'undefined' && Runtime.withScriptLock)
+      ? Runtime.withScriptLock('morningDigest', 5000, run)
+      : run();
+  } catch (e) {
+    Logger.log('morningDigest: FAILED');
+    Alerts.notify('morningDigest', e);
+    throw e;
+  }
+}
+
+function morningDigest_() {
     Crm.ensureSchema();
 
     const pending = Crm.readAll(Crm.TABS.APPROVALS).filter(function (a) {
@@ -62,13 +74,6 @@ function morningDigest() {
       name: 'Job-Hunt Autopilot'
     });
     Logger.log('morningDigest: sent ' + pending.length + ' item(s) to ' + cand.email);
-  } catch (e) {
-    // Almost always a missing send_mail authorisation - re-run the project
-    // once from the editor and grant permissions, then re-install triggers.
-    Logger.log('morningDigest: FAILED: ' + e);
-    Alerts.notify('morningDigest', e);
-    throw e;
-  }
 }
 
 function htmlEscape_(s) {

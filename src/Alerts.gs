@@ -26,7 +26,7 @@ function alertText_(value, maximum) {
   let text = '';
   try { text = String(value || ''); } catch (e) { text = 'Unknown failure'; }
   text = text.replace(/https?:\/\/[^\s<>"']+/gi, '[URL]');
-  text = text.replace(/\b(?:gemini|adzuna|rapidapi)?[_-]?(?:api[_-]?key|app[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi, '[REDACTED]');
+  text = text.replace(/\b(?:gemini|adzuna|rapidapi)?[_-]?(?:api\s*[_-]?key|app\s*[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi, '[REDACTED]');
   text = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (text.length > maximum) text = text.slice(0, maximum - 3) + '...';
   return text || 'Unknown failure';

@@ -1615,9 +1615,14 @@ const Outreach = {
     for (let i = 0; i < agencies.length && n < limit; i++) {
       const a = agencies[i];
       if (typeof Runtime !== 'undefined' && deadline && Runtime.shouldStop(deadline)) break;
+      const contactId = String(a.id || '').trim();
+      if (!contactId) {
+        failures.push(Runtime.failure('agency:' + String(a._row || 'unknown'), new Error('Stable contact ID is required')));
+        continue;
+      }
       let claimToken = '';
       if (Crm.claim) {
-        const claim = Crm.claim(Crm.TABS.CONTACTS, a.id || String(a._row));
+        const claim = Crm.claim(Crm.TABS.CONTACTS, contactId);
         if (claim === false) continue;
         claimToken = typeof claim === 'string' ? claim : '';
       }
@@ -1639,8 +1644,8 @@ const Outreach = {
         failures.push(Runtime.failure('agency:' + String(a.id || a._row), e));
       } finally {
         if (claimToken && Crm.releaseClaim) {
-          try { Crm.releaseClaim(Crm.TABS.CONTACTS, a.id || String(a._row), claimToken); }
-          catch (releaseError) { failures.push(Runtime.failure('agency release:' + String(a.id || a._row), releaseError)); }
+          try { Crm.releaseClaim(Crm.TABS.CONTACTS, contactId, claimToken); }
+          catch (releaseError) { failures.push(Runtime.failure('agency release:' + contactId, releaseError)); }
         }
       }
     }

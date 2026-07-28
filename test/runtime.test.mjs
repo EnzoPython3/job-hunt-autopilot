@@ -676,7 +676,7 @@ test('Alerts sanitises secrets, URLs, and oversized response bodies without recu
     names: ['Alerts']
   }).Alerts;
 
-  Alerts.notify('dailySource', new Error('HTTP 403 https://api.example.test/path?key=secret body=' + 'x'.repeat(5000)));
+  Alerts.notify('dailySource', new Error('HTTP 403 API key: secret https://api.example.test/path?key=secret body=' + 'x'.repeat(5000)));
   assert.equal(sent.length, 1);
   assert.equal(sent[0].body.includes('secret'), false);
   assert.equal(sent[0].body.includes('https://api.example.test'), false);
@@ -774,4 +774,18 @@ test('pruneDeadLinks runs behind the shared lock and alerts on failure', () => {
   });
   assert.throws(() => pruneDeadLinks(), /maintenance unavailable/);
   assert.deepEqual(events.map((event) => event[0]), ['lock', 'alert']);
+});
+
+test('morningDigest uses the shared lock while retaining its existing no-pending fast path', () => {
+  const events = [];
+  const { morningDigest } = loadGs(resolve(ROOT, 'src/Digest.gs'), {
+    globals: {
+      Runtime: { withScriptLock: (name, wait, fn) => { events.push(['lock', name, wait]); return fn(); } },
+      Crm: { ensureSchema: () => {}, TABS: { APPROVALS: 'Approvals' }, readAll: () => [] },
+      Logger: { log: (message) => events.push(['log', message]) }, Alerts: { notify: () => {} }
+    }, names: ['morningDigest']
+  });
+  morningDigest();
+  assert.equal(events[0][0], 'lock');
+  assert.equal(events[0][1], 'morningDigest');
 });

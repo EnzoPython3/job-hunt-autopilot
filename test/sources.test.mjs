@@ -16,7 +16,7 @@ function response(code, body, headers = {}) {
   };
 }
 
-function loadSources({ fetch = () => response(200, {}), properties = {}, boards = [], existing = [], adzunaQueries = ['support'], jsearchQueries = ['support'], lock = null, now = () => 1000, findChecks = [] } = {}) {
+function loadSources({ fetch = () => response(200, {}), properties = {}, boards = [], existing = [], adzunaQueries = ['support'], jsearchQueries = ['support'], lock = null, now = () => Date.now(), stop = null, findChecks = [] } = {}) {
   const logs = [];
   const alerts = [];
   const rows = [];
@@ -54,7 +54,7 @@ function loadSources({ fetch = () => response(200, {}), properties = {}, boards 
       },
       Runtime: {
         deadlineMs: () => now() + 300000,
-        shouldStop: (deadline) => now() >= deadline,
+        shouldStop: (deadline) => stop ? stop(deadline) : now() >= deadline,
         withScriptLock: (_name, _wait, fn) => lock ? lock(fn) : fn()
       },
       Outreach: { harvestEmail_: () => '' },
@@ -286,10 +286,11 @@ test('ingest serialises append phase and rechecks stable IDs before every append
     findChecks,
     lock: (fn) => { events.push('lock-start'); const result = fn(); events.push('lock-end'); return result; }
   });
+  loaded.Sources.hashId_ = (_source, _company, role) => role;
   const crm = loaded.rows;
   const result = loaded.Sources.ingest(10);
   assert.equal(result, 2);
-  assert.deepEqual(events, ['lock-start', 'lock-end']);
+  assert.deepEqual(events, ['lock-start', 'lock-end', 'lock-start', 'lock-end']);
   assert.equal(crm.length, 2);
   assert.equal(findChecks.length, 2);
 });
@@ -299,7 +300,7 @@ test('source adapters stop before a network request when the deadline expires', 
   const { Sources } = loadSources({
     properties: { RAPIDAPI_KEY: 'rapid-test-key' },
     jsearchQueries: ['one', 'two'],
-    now: () => 400001,
+    stop: () => true,
     fetch: () => { calls++; return response(200, { data: [] }); }
   });
   assert.equal(Sources.fromJSearch_(400000).length, 0);

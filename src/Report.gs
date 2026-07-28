@@ -55,21 +55,34 @@ const Report = {
   // to a Date stored at sheet-tz midnight, so formatting the read-back in any
   // other zone can shift a calendar day and split the week into duplicate rows.
   writeKpiRow_(kpi) {
-    const tz = Crm.ss_().getSpreadsheetTimeZone();
-    const week = Utilities.formatDate(this.mondayOf_(new Date()), tz, 'yyyy-MM-dd');
-    const row = {
-      week_start: week, sourced: kpi.sourced, scored: kpi.scored, queued: kpi.queued,
-      approved: kpi.approved, submitted: kpi.submitted, sent: kpi.sent,
-      responses: kpi.responses, interviews: kpi.interviews, notes: 'auto weekly snapshot'
+    const self = this;
+    const runtime = (typeof Runtime !== 'undefined' && Runtime.withScriptLock) ? Runtime : null;
+    const write = function () {
+      const tz = Crm.ss_().getSpreadsheetTimeZone();
+      const week = self.weekStartKey_(new Date(), tz);
+      const row = {
+        week_start: week, sourced: kpi.sourced, scored: kpi.scored, queued: kpi.queued,
+        approved: kpi.approved, submitted: kpi.submitted, sent: kpi.sent,
+        responses: kpi.responses, interviews: kpi.interviews, notes: 'auto weekly snapshot'
+      };
+      const existing = Crm.readAll(Crm.TABS.KPIS).filter(function (r) {
+        const w = (r.week_start instanceof Date)
+          ? Utilities.formatDate(r.week_start, tz, 'yyyy-MM-dd')
+          : String(r.week_start).slice(0, 10);
+        return w === week;
+      })[0];
+      if (existing) Crm.updateRow(Crm.TABS.KPIS, existing._row, row);
+      else Crm.appendRow(Crm.TABS.KPIS, row);
     };
-    const existing = Crm.readAll(Crm.TABS.KPIS).filter(function (r) {
-      const w = (r.week_start instanceof Date)
-        ? Utilities.formatDate(r.week_start, tz, 'yyyy-MM-dd')
-        : String(r.week_start).slice(0, 10);
-      return w === week;
-    })[0];
-    if (existing) Crm.updateRow(Crm.TABS.KPIS, existing._row, row);
-    else Crm.appendRow(Crm.TABS.KPIS, row);
+    return runtime ? runtime.withScriptLock('weekly-kpi', 5000, write) : write();
+  },
+
+  weekStartKey_(date, tz) {
+    const civil = Utilities.formatDate(date, tz, 'yyyy-MM-dd').split('-').map(Number);
+    const utc = new Date(Date.UTC(civil[0], civil[1] - 1, civil[2], 12, 0, 0));
+    const day = utc.getUTCDay();
+    utc.setUTCDate(utc.getUTCDate() + (day === 0 ? -6 : 1 - day));
+    return utc.getUTCFullYear() + '-' + ('0' + (utc.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + utc.getUTCDate()).slice(-2);
   },
 
   mondayOf_(d) {

@@ -14,14 +14,17 @@ const Sources = {
     cap = cap || Config.tunable('DAILY_SOURCE_CAP');
     const self = this;
     const t0 = Date.now();
+    const deadline = (typeof Runtime !== 'undefined' && Runtime.deadlineMs)
+      ? Runtime.deadlineMs(300000) : t0 + 300000;
     const found = [];
     const failures = [];
     this.lastFailureReport_ = failures;
     this.failureContext_ = failures;
-    try { Array.prototype.push.apply(found, this.fromJSearch_()); } catch (e) { this.recordFailure_(failures, 'JSearch'); }
-    try { Array.prototype.push.apply(found, this.fromAdzuna()); } catch (e) { this.recordFailure_(failures, 'Adzuna'); }
+    try { Array.prototype.push.apply(found, this.fromJSearch_(deadline)); } catch (e) { this.recordFailure_(failures, 'JSearch'); }
+    try { Array.prototype.push.apply(found, this.fromAdzuna(deadline)); } catch (e) { this.recordFailure_(failures, 'Adzuna'); }
     Config.atsBoards().forEach(function (b) {
-      try { Array.prototype.push.apply(found, self.fromAts(b)); }
+      if (self.shouldStop_(deadline)) return;
+      try { Array.prototype.push.apply(found, self.fromAts(b, deadline)); }
       catch (e) { self.recordFailure_(failures, 'ATS ' + b.type); }
     });
     this.failureContext_ = null;
@@ -32,7 +35,6 @@ const Sources = {
     const seen = {};
     Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) { if (o.id) seen[o.id] = true; });
 
-    const deadline = t0 + 5 * 60 * 1000;   // stop before Apps Script's 6-min hard kill
     let added = 0, dead = 0, excluded = 0, offloc = 0, stopped = false;
     for (let i = 0; i < found.length && added < cap; i++) {
       if (Date.now() > deadline) { stopped = true; break; }
@@ -49,7 +51,7 @@ const Sources = {
       // posting under rotating redirect wrappers, so hashing the wrapper duplicated
       // rows. JSearch/ATS already return direct links.
       if (/^adzuna/.test(job.source)) {
-        const r = self.resolveUrl_(job.url);
+        const r = self.resolveUrl_(job.url, 4, deadline);
         if (!r.alive) { dead++; continue; }
         job.url = r.url;
         job.id = self.hashId_(job.source, job.company, job.role, job.url);
@@ -63,13 +65,24 @@ const Sources = {
       // "email application" (tailored CV + Gmail draft) rather than a portal role.
       if (!job.contact_email && job.descr) job.contact_email = Outreach.harvestEmail_(job.descr);
 
-      Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
-        id: job.id, source: job.source, company: job.company, role: job.role,
-        location: job.location, mode: job.mode, url: job.url, contact_email: job.contact_email || '',
-        posted_date: job.posted_date || '', status: 'sourced',
-        created_at: new Date(), updated_at: new Date()
-      });
-      added++;
+      const appended = (typeof Runtime !== 'undefined' && Runtime.withScriptLock)
+        ? Runtime.withScriptLock('sources-ingest-append', 5000, function () {
+            if (Crm.findOpportunity && Crm.findOpportunity(job.id)) return false;
+            Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
+              id: job.id, source: job.source, company: job.company, role: job.role,
+              location: job.location, mode: job.mode, url: job.url, contact_email: job.contact_email || '',
+              posted_date: job.posted_date || '', status: 'sourced',
+              created_at: new Date(), updated_at: new Date()
+            });
+            return true;
+          })
+        : (Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
+            id: job.id, source: job.source, company: job.company, role: job.role,
+            location: job.location, mode: job.mode, url: job.url, contact_email: job.contact_email || '',
+            posted_date: job.posted_date || '', status: 'sourced',
+            created_at: new Date(), updated_at: new Date()
+          }), true);
+      if (appended) added++;
     }
     const skips = [];
     if (dead) skips.push(dead + ' dead-link');
@@ -92,6 +105,11 @@ const Sources = {
     this.lastFailureReport_ = failures;
   },
 
+  shouldStop_(deadline) {
+    return deadline !== undefined && deadline !== null &&
+      ((typeof Runtime !== 'undefined' && Runtime.shouldStop) ? Runtime.shouldStop(deadline) : Date.now() >= deadline);
+  },
+
   // Phrases boards print on a closed posting (many answer HTTP 200 for these).
   EXPIRED_RE: /no longer available|job (has )?expired|position (has )?been filled|this job is no longer/i,
 
@@ -104,7 +122,7 @@ const Sources = {
    * Fails open only after at least one hop resolved; an error on the very first
    * request marks the link dead (the job simply re-ingests on a later run).
    */
-  resolveUrl_(url, maxHops) {
+  resolveUrl_(url, maxHops, deadline) {
     url = Validation.safeHttpsUrl(url);
     if (!url) return { url: url, alive: false };
     maxHops = maxHops || 4;
@@ -112,6 +130,7 @@ const Sources = {
     let hops = 0;
     try {
       for (let h = 0; h < maxHops; h++) {
+        if (this.shouldStop_(deadline)) return { url: cur, alive: false, stopped: true };
         const res = UrlFetchApp.fetch(cur, {
           followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: true
         });
@@ -204,8 +223,8 @@ const Sources = {
    * page as dead. Fails open (returns true) on network/timeout errors so a
    * transient blip does not silently drop a good job.
    */
-  linkAlive_(url) {
-    return this.resolveUrl_(url).alive;
+  linkAlive_(url, deadline) {
+    return this.resolveUrl_(url, 4, deadline).alive;
   },
 
   hashId_(source, company, role, url) {
@@ -215,7 +234,8 @@ const Sources = {
     return source.split(':')[0] + '_' + hex.slice(0, 16);
   },
 
-  getJson_(url) {
+  getJson_(url, deadline) {
+    if (this.shouldStop_(deadline)) throw new Error('source deadline reached');
     const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
     if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode());
     return JSON.parse(this.responseBody_(res));
@@ -227,7 +247,7 @@ const Sources = {
     return body;
   },
 
-  fromAdzuna() {
+  fromAdzuna(deadline) {
     const appId = Config.get(Config.KEYS.ADZUNA_APP_ID);
     const appKey = Config.get(Config.KEYS.ADZUNA_APP_KEY) || Config.get('ADZUNA_API_KEY');
     if (!appId || !appKey) { Logger.log('Adzuna keys not set; skipping.'); return []; }
@@ -235,6 +255,7 @@ const Sources = {
     const out = [];
     Config.adzunaCountries().forEach(function (country) {
       Config.adzunaQueries().forEach(function (what) {
+        if (self.shouldStop_(deadline)) return;
         const url = 'https://api.adzuna.com/v1/api/jobs/' + country + '/search/1' +
           '?app_id=' + encodeURIComponent(appId) +
           '&app_key=' + encodeURIComponent(appKey) +
@@ -276,13 +297,14 @@ const Sources = {
    * Indeed, LinkedIn, Glassdoor and SA boards (incl. PNet-sourced listings).
    * Returns DIRECT apply links (job_apply_link), so links are live by design.
    */
-  fromJSearch_() {
+  fromJSearch_(deadline) {
     const key = Config.get(Config.KEYS.RAPIDAPI_KEY);
     if (!key) { Logger.log('JSearch key (RAPIDAPI_KEY) not set; skipping.'); return []; }
     const self = this;
     const out = [];
     const datePosted = Config.jsearchDatePosted();
     Config.jsearchQueries().forEach(function (what) {
+      if (self.shouldStop_(deadline)) return;
       // JSearch's /search was retired in favour of /search-v2 (cursor pagination -
       // no page/num_pages). Omitting the cursor returns the first page, which is all we need.
       const url = 'https://jsearch.p.rapidapi.com/search-v2' +
@@ -331,19 +353,19 @@ const Sources = {
     return [];
   },
 
-  fromAts(board) {
+  fromAts(board, deadline) {
     switch (board.type) {
-      case 'greenhouse': return this.fromGreenhouse_(board.slug);
-      case 'lever': return this.fromLever_(board.slug);
-      case 'ashby': return this.fromAshby_(board.slug);
-      case 'workable': return this.fromWorkable_(board.slug);
+      case 'greenhouse': return this.fromGreenhouse_(board.slug, deadline);
+      case 'lever': return this.fromLever_(board.slug, deadline);
+      case 'ashby': return this.fromAshby_(board.slug, deadline);
+      case 'workable': return this.fromWorkable_(board.slug, deadline);
       default: return [];
     }
   },
 
-  fromGreenhouse_(slug) {
+  fromGreenhouse_(slug, deadline) {
     const self = this;
-    const data = this.getJson_('https://boards-api.greenhouse.io/v1/boards/' + slug + '/jobs');
+    const data = this.getJson_('https://boards-api.greenhouse.io/v1/boards/' + slug + '/jobs', deadline);
     if (!data || !Array.isArray(data.jobs)) return [];
     return data.jobs.map(function (j) {
       return j && self.job_('greenhouse:' + slug, slug, j.title, j.absolute_url,
@@ -351,9 +373,9 @@ const Sources = {
     }).filter(Boolean);
   },
 
-  fromLever_(slug) {
+  fromLever_(slug, deadline) {
     const self = this;
-    const data = this.getJson_('https://api.lever.co/v0/postings/' + slug + '?mode=json');
+    const data = this.getJson_('https://api.lever.co/v0/postings/' + slug + '?mode=json', deadline);
     if (!Array.isArray(data)) return [];
     return data.map(function (j) {
       const valid = j && self.job_('lever:' + slug, slug, j.text, j.hostedUrl,
@@ -363,9 +385,9 @@ const Sources = {
     }).filter(Boolean);
   },
 
-  fromAshby_(slug) {
+  fromAshby_(slug, deadline) {
     const self = this;
-    const data = this.getJson_('https://api.ashbyhq.com/posting-api/job-board/' + slug + '?includeCompensation=false');
+    const data = this.getJson_('https://api.ashbyhq.com/posting-api/job-board/' + slug + '?includeCompensation=false', deadline);
     if (!data || !Array.isArray(data.jobs)) return [];
     return data.jobs.map(function (j) {
       const valid = j && self.job_('ashby:' + slug, slug, j.title, j.jobUrl,
@@ -375,9 +397,9 @@ const Sources = {
     }).filter(Boolean);
   },
 
-  fromWorkable_(slug) {
+  fromWorkable_(slug, deadline) {
     const self = this;
-    const data = this.getJson_('https://apply.workable.com/api/v1/widget/accounts/' + slug + '?details=true');
+    const data = this.getJson_('https://apply.workable.com/api/v1/widget/accounts/' + slug + '?details=true', deadline);
     if (!data || !Array.isArray(data.jobs)) return [];
     return data.jobs.map(function (j) {
       if (!j || typeof j !== 'object') return null;

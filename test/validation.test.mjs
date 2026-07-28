@@ -249,7 +249,7 @@ test('weekly KPI upsert is locked and derives the week in spreadsheet timezone',
     services: {
       Utilities: { formatDate: (date, tz) => {
         assert.equal(tz, 'America/Los_Angeles');
-        return date instanceof Date ? '2026-07-27' : '';
+        return '2026-07-27';
       } }
     },
     globals: {

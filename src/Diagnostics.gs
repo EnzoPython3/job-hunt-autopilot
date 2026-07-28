@@ -84,15 +84,16 @@ function pruneDeadLinks() {
   try {
     Crm.ensureSchema();
     const MAX_CHECKS = Config.tunable('MAINTENANCE_CHECKS');
-    const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
+    const deadline = (typeof Runtime !== 'undefined' && Runtime.deadlineMs)
+      ? Runtime.deadlineMs(270000) : Date.now() + 4.5 * 60 * 1000;
     let budget = MAX_CHECKS;
     let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;
 
     Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) {
       if (!o.url || o.status === 'dead_link') return;
-      if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
+      if (budget <= 0 || ((typeof Runtime !== 'undefined' && Runtime.shouldStop) ? Runtime.shouldStop(deadline) : Date.now() > deadline)) { capped = true; return; }
       budget--; oppChecked++;
-      if (!Sources.linkAlive_(o.url)) {
+      if (!Sources.linkAlive_(o.url, deadline)) {
         Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
           status: 'dead_link',
           notes: String(o.notes || '') + ' [pruned: dead link]',
@@ -104,9 +105,9 @@ function pruneDeadLinks() {
 
     Crm.readAll(Crm.TABS.APPROVALS).forEach(function (a) {
       if (!a.url || String(a.decision || '').trim()) return;   // leave already-decided rows alone
-      if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
+      if (budget <= 0 || ((typeof Runtime !== 'undefined' && Runtime.shouldStop) ? Runtime.shouldStop(deadline) : Date.now() > deadline)) { capped = true; return; }
       budget--; apprChecked++;
-      if (!Sources.linkAlive_(a.url)) {
+      if (!Sources.linkAlive_(a.url, deadline)) {
         Crm.updateRow(Crm.TABS.APPROVALS, a._row, {
           decision: 'Skip - dead link',
           edited_notes: String(a.edited_notes || '') + ' [pruned: dead link]'

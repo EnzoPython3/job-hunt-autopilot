@@ -7,16 +7,20 @@
  * dropped; JSearch and ATS return direct links, so they are trusted for speed.
  */
 const Sources = {
+  lastFailureReport_: [],
+
   ingest(cap) {
     cap = cap || Config.tunable('DAILY_SOURCE_CAP');
     const self = this;
     const t0 = Date.now();
     const found = [];
-    try { Array.prototype.push.apply(found, this.fromJSearch_()); } catch (e) { Logger.log('JSearch: ' + e); }
-    try { Array.prototype.push.apply(found, this.fromAdzuna()); } catch (e) { Logger.log('Adzuna: ' + e); }
+    const failures = [];
+    this.lastFailureReport_ = failures;
+    try { Array.prototype.push.apply(found, this.fromJSearch_()); } catch (e) { this.recordFailure_(failures, 'JSearch'); }
+    try { Array.prototype.push.apply(found, this.fromAdzuna()); } catch (e) { this.recordFailure_(failures, 'Adzuna'); }
     Config.atsBoards().forEach(function (b) {
       try { Array.prototype.push.apply(found, self.fromAts(b)); }
-      catch (e) { Logger.log('ATS ' + b.type + '/' + b.slug + ': ' + e); }
+      catch (e) { self.recordFailure_(failures, 'ATS ' + b.type); }
     });
 
     // Read existing ids ONCE. Calling Crm.existsOpportunity per job re-read the
@@ -70,7 +74,18 @@ const Sources = {
     if (offloc) skips.push(offloc + ' out-of-location');
     if (skips.length) Logger.log('ingest: skipped ' + skips.join(', ') + '.');
     if (stopped) Logger.log('ingest: stopped at time budget; next run continues with what is still fresh.');
+    if (failures.length) {
+      Logger.log('ingest: ' + failures.length + ' source failure(s); retry is required.');
+      throw new Error('Source ingest failed: ' + failures.length + ' source failure(s)');
+    }
     return added;
+  },
+
+  recordFailure_(failures, label) {
+    if (failures.length >= 20) return;
+    const entry = String(label) + ': source request failed';
+    failures.push(entry);
+    this.lastFailureReport_ = failures;
   },
 
   // Phrases boards print on a closed posting (many answer HTTP 200 for these).
@@ -86,6 +101,7 @@ const Sources = {
    * request marks the link dead (the job simply re-ingests on a later run).
    */
   resolveUrl_(url, maxHops) {
+    url = Validation.safeHttpsUrl(url);
     if (!url) return { url: url, alive: false };
     maxHops = maxHops || 4;
     let cur = url;
@@ -93,7 +109,7 @@ const Sources = {
     try {
       for (let h = 0; h < maxHops; h++) {
         const res = UrlFetchApp.fetch(cur, {
-          followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: false
+          followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: true
         });
         const code = res.getResponseCode();
         if (code >= 300 && code < 400) {
@@ -101,7 +117,8 @@ const Sources = {
           let loc = hdr['Location'] || hdr['location'];
           if (Array.isArray(loc)) loc = loc[0];
           if (!loc) return { url: cur, alive: true };
-          cur = this.absoluteUrl_(cur, loc);
+          cur = Validation.safeHttpsUrl(this.absoluteUrl_(cur, loc));
+          if (!cur) return { url: '', alive: false };
           hops++;
           continue;
         }
@@ -111,7 +128,8 @@ const Sources = {
         if (this.EXPIRED_RE.test(body)) return { url: cur, alive: false };
         const meta = body.match(/http-equiv=["']?refresh["']?[^>]*url\s*=\s*["']?([^"'>\s]+)/i);
         if (meta && meta[1] && h < maxHops - 1) {
-          cur = this.absoluteUrl_(cur, meta[1]);
+          cur = Validation.safeHttpsUrl(this.absoluteUrl_(cur, meta[1]));
+          if (!cur) return { url: '', alive: false };
           hops++;
           continue;
         }
@@ -119,7 +137,7 @@ const Sources = {
       }
       return { url: cur, alive: true };              // too many hops; treat as alive
     } catch (e) {
-      Logger.log('resolveUrl_ (' + url + '): ' + e);
+      Logger.log('resolveUrl_: request failed');
       return { url: cur, alive: hops > 0 };          // hop-0 failure = source link unreachable
     }
   },
@@ -183,20 +201,7 @@ const Sources = {
    * transient blip does not silently drop a good job.
    */
   linkAlive_(url) {
-    if (!url) return false;
-    try {
-      const res = UrlFetchApp.fetch(url, {
-        followRedirects: true, muteHttpExceptions: true, validateHttpsCertificates: false
-      });
-      const code = res.getResponseCode();
-      if (code >= 400) return false;
-      const body = res.getContentText().slice(0, 4000);
-      if (this.EXPIRED_RE.test(body)) return false;
-      return true;
-    } catch (e) {
-      Logger.log('linkAlive_ (' + url + '): ' + e);
-      return true;
-    }
+    return this.resolveUrl_(url).alive;
   },
 
   hashId_(source, company, role, url) {
@@ -207,7 +212,7 @@ const Sources = {
   },
 
   getJson_(url) {
-    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
     if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode());
     return JSON.parse(res.getContentText());
   },
@@ -228,21 +233,25 @@ const Sources = {
           '&sort_by=date' +          // newest first, so redirects are less likely expired
           '&max_days_old=10' +       // tighter window - stale postings 404 on click
           '&content-type=application/json';
-        const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+        const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
         if (res.getResponseCode() !== 200) { Logger.log('Adzuna ' + country + '/' + what + ' HTTP ' + res.getResponseCode()); return; }
         const data = JSON.parse(res.getContentText());
-        (data.results || []).forEach(function (r) {
+        if (!data || !Array.isArray(data.results)) return;
+        data.results.forEach(function (r) {
+          if (!r || typeof r !== 'object') return;
           const company = (r.company && r.company.display_name) || 'Unknown';
           const role = r.title || '';
           const jurl = r.redirect_url || '';
+          const valid = self.job_(
+            'adzuna:' + country, company, role, jurl,
+            (r.location && r.location.display_name) || '',
+            /remote|work from home|wfh/.test((role + ' ' + (r.description || '')).toLowerCase()),
+            r.created || '', r.description || ''
+          );
+          if (!valid) return;
           const hay = (role + ' ' + (r.description || '')).toLowerCase();
-          out.push({
-            id: self.hashId_('adzuna:' + country, company, role, jurl),
-            source: 'adzuna:' + country, company: company, role: role,
-            location: (r.location && r.location.display_name) || '',
-            mode: /remote|work from home|wfh/.test(hay) ? 'remote' : '',
-            url: jurl, posted_date: r.created || '', descr: r.description || ''
-          });
+          valid.mode = /remote|work from home|wfh/.test(hay) ? 'remote' : '';
+          out.push(valid);
         });
       });
     });
@@ -270,28 +279,25 @@ const Sources = {
       const res = UrlFetchApp.fetch(url, {
         method: 'get',
         muteHttpExceptions: true,
-        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' }
+        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+        validateHttpsCertificates: true
       });
       if (res.getResponseCode() !== 200) {
-        Logger.log('JSearch "' + what + '" HTTP ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 200));
+        Logger.log('JSearch HTTP ' + res.getResponseCode());
         return;
       }
       const data = JSON.parse(res.getContentText());
       self.pickJobs_(data).forEach(function (j) {
+        if (!j || typeof j !== 'object') return;
         const company = j.employer_name || 'Unknown';
         const role = j.job_title || '';
         const jurl = j.job_apply_link || '';
         if (!jurl) return;
         const publisher = j.job_publisher || 'jsearch';
         const loc = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || (j.job_location || '');
-        out.push({
-          id: self.hashId_('jsearch:' + publisher, company, role, jurl),
-          source: 'jsearch:' + publisher, company: company, role: role,
-          location: loc,
-          mode: j.job_is_remote ? 'remote' : '',
-          url: jurl, posted_date: j.job_posted_at_datetime_utc || '',
-          descr: j.job_description || ''
-        });
+        const valid = self.job_('jsearch:' + publisher, company, role, jurl, loc,
+          j.job_is_remote, j.job_posted_at_datetime_utc || '', j.job_description || '');
+        if (valid) out.push(valid);
       });
     });
     return out;
@@ -325,55 +331,65 @@ const Sources = {
   fromGreenhouse_(slug) {
     const self = this;
     const data = this.getJson_('https://boards-api.greenhouse.io/v1/boards/' + slug + '/jobs');
-    return (data.jobs || []).map(function (j) {
-      return {
-        id: self.hashId_('greenhouse:' + slug, slug, j.title, j.absolute_url),
-        source: 'greenhouse:' + slug, company: slug, role: j.title,
-        location: (j.location && j.location.name) || '', mode: '',
-        url: j.absolute_url, posted_date: j.updated_at || ''
-      };
-    });
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      return j && self.job_('greenhouse:' + slug, slug, j.title, j.absolute_url,
+        j.location && j.location.name, false, j.updated_at || '', '');
+    }).filter(Boolean);
   },
 
   fromLever_(slug) {
     const self = this;
     const data = this.getJson_('https://api.lever.co/v0/postings/' + slug + '?mode=json');
-    return (data || []).map(function (j) {
-      return {
-        id: self.hashId_('lever:' + slug, slug, j.text, j.hostedUrl),
-        source: 'lever:' + slug, company: slug, role: j.text,
-        location: (j.categories && j.categories.location) || '',
-        mode: (j.categories && j.categories.commitment) || '',
-        url: j.hostedUrl, posted_date: j.createdAt || ''
-      };
-    });
+    if (!Array.isArray(data)) return [];
+    return data.map(function (j) {
+      const valid = j && self.job_('lever:' + slug, slug, j.text, j.hostedUrl,
+        j.categories && j.categories.location, false, j.createdAt || '', '');
+      if (valid) valid.mode = (j.categories && j.categories.commitment) || '';
+      return valid;
+    }).filter(Boolean);
   },
 
   fromAshby_(slug) {
     const self = this;
     const data = this.getJson_('https://api.ashbyhq.com/posting-api/job-board/' + slug + '?includeCompensation=false');
-    return (data.jobs || []).map(function (j) {
-      return {
-        id: self.hashId_('ashby:' + slug, slug, j.title, j.jobUrl),
-        source: 'ashby:' + slug, company: slug, role: j.title,
-        location: j.location || '', mode: j.isRemote ? 'remote' : '',
-        url: j.jobUrl, posted_date: j.publishedAt || ''
-      };
-    });
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      const valid = j && self.job_('ashby:' + slug, slug, j.title, j.jobUrl,
+        j.location, j.isRemote, j.publishedAt || '', '');
+      if (valid) valid.mode = j.isRemote ? 'remote' : '';
+      return valid;
+    }).filter(Boolean);
   },
 
   fromWorkable_(slug) {
     const self = this;
     const data = this.getJson_('https://apply.workable.com/api/v1/widget/accounts/' + slug + '?details=true');
-    return (data.jobs || []).map(function (j) {
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      if (!j || typeof j !== 'object') return null;
       const loc = j.location ? [j.location.city, j.location.country].filter(Boolean).join(', ') : '';
       const url = j.url || j.shortlink || '';
-      return {
-        id: self.hashId_('workable:' + slug, slug, j.title, url),
-        source: 'workable:' + slug, company: slug, role: j.title,
-        location: loc, mode: j.remote ? 'remote' : '',
-        url: url, posted_date: j.published_on || ''
-      };
-    });
+      const valid = self.job_('workable:' + slug, slug, j.title, url, loc,
+        j.remote, j.published_on || '', '');
+      if (valid) valid.mode = j.remote ? 'remote' : '';
+      return valid;
+    }).filter(Boolean);
+  },
+
+  job_(source, company, role, url, location, remote, postedDate, descr) {
+    if (!url || !role) return null;
+    const safeUrl = Validation.safeHttpsUrl(url);
+    if (!safeUrl) return null;
+    company = String(company || 'Unknown').slice(0, 200);
+    role = String(role).trim().slice(0, 300);
+    if (!role) return null;
+    return {
+      id: this.hashId_(source, company, role, safeUrl),
+      source: source, company: company, role: role,
+      location: String(location || '').slice(0, 300), mode: remote ? 'remote' : '',
+      url: safeUrl, posted_date: String(postedDate || '').slice(0, 80),
+      descr: String(descr || '').slice(0, 12000)
+    };
   }
 };

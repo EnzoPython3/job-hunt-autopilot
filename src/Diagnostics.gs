@@ -23,16 +23,14 @@ function diagnose() {
       const url = 'https://api.adzuna.com/v1/api/jobs/za/search/1?app_id=' + encodeURIComponent(appId) +
         '&app_key=' + encodeURIComponent(appKey) + '&results_per_page=3&what=' +
         encodeURIComponent('customer service') + '&sort_by=date&max_days_old=21&content-type=application/json';
-      const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
       out.push('  HTTP ' + res.getResponseCode());
-      const body = res.getContentText();
       try {
-        const d = JSON.parse(body);
-        if (d.exception) out.push('  exception: ' + d.exception);
-        else out.push('  count: ' + d.count + ', results returned: ' + (d.results ? d.results.length : 0));
-      } catch (e) { out.push('  body: ' + body.slice(0, 200)); }
+        const d = JSON.parse(res.getContentText());
+        out.push('  response shape: ' + (d && Array.isArray(d.results) ? 'valid' : 'unexpected'));
+      } catch (e) { out.push('  response shape: invalid JSON'); }
     }
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== JSearch live test ===');
   try {
@@ -45,36 +43,30 @@ function diagnose() {
         '&country=za&date_posted=week';
       const res = UrlFetchApp.fetch(url, {
         method: 'get', muteHttpExceptions: true,
-        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' }
+        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+        validateHttpsCertificates: true
       });
       out.push('  HTTP ' + res.getResponseCode());
-      const body = res.getContentText();
-      if (res.getResponseCode() !== 200) {
-        // 404/403 here is a RapidAPI subscription/key issue - the body says which.
-        out.push('  body: ' + body.slice(0, 200));
-      } else {
+      if (res.getResponseCode() !== 200) out.push('  response shape: unavailable');
+      else {
         try {
-          const d = JSON.parse(body);
-          const arr = Sources.pickJobs_(d);
-          const n = arr.length;
-          out.push('  results returned: ' + n + (n
-            ? ('  sample link: ' + (arr[0].job_apply_link || '').slice(0, 80))
-            : ('  top-level keys: ' + Object.keys(d).join(',') + '  body: ' + body.slice(0, 200))));
-        } catch (e) { out.push('  body: ' + body.slice(0, 200)); }
+          const d = JSON.parse(res.getContentText());
+          out.push('  response shape: ' + (Sources.pickJobs_(d).length ? 'valid' : 'empty or unexpected'));
+        } catch (e) { out.push('  response shape: invalid JSON'); }
       }
     }
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== Gemini live test ===');
   try {
-    const r = Gemini.generate('Reply with exactly: ok', { maxOutputTokens: 10 });
-    out.push('  reply: ' + String(r).trim().slice(0, 40));
-  } catch (e) { out.push('  ERROR: ' + e); }
+    Gemini.generate('Reply with exactly: ok', { maxOutputTokens: 10 });
+    out.push('  reply: received');
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== Sheet ===');
   try {
     out.push('  Opportunities rows: ' + Crm.readAll(Crm.TABS.OPPORTUNITIES).length);
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: sheet read failed'); }
 
   const report = out.join('\n');
   Logger.log(report);

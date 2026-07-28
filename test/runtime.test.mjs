@@ -334,25 +334,30 @@ test('Crm claims stable IDs, refuses active duplicates, and reclaims expired cla
   Crm.Runtime = { withScriptLock: (_name, _waitMs, fn) => fn() };
 
   assert.equal(Crm.claim('Opportunities', 'opp-stable', { leaseMs: 60000 }), false);
-  assert.equal(Crm.claim('Opportunities', 'opp-stable', { leaseMs: 500 }), true);
+  const firstToken = Crm.claim('Opportunities', 'opp-stable', { leaseMs: 500 });
+  assert.equal(typeof firstToken, 'string');
+  assert.ok(firstToken.length > 0);
   assert.equal(updates[0][1], 27);
-  assert.equal(updates[0][2].processing_key, 'opp-stable');
+  assert.equal(updates[0][2].processing_key, firstToken);
   assert.equal(updates[0][2].processing_state, 'working');
 
   rows[0].processing_started_at = new Date(Date.now() - 5000);
-  assert.equal(Crm.claim('Opportunities', 'opp-stable', { leaseMs: 1000 }), true);
+  const secondToken = Crm.claim('Opportunities', 'opp-stable', { leaseMs: 1000 });
+  assert.equal(typeof secondToken, 'string');
+  assert.notEqual(secondToken, firstToken);
 });
 
-test('Crm releaseClaim uses the stable key and clears only its own claim', () => {
+test('Crm releaseClaim requires the current claim token and cannot clear a reclaimed claim', () => {
   const updates = [];
-  const rows = [{ _row: 44, id: 'contact-stable', processing_state: 'working', processing_key: 'contact-stable' }];
+  const rows = [{ _row: 44, id: 'contact-stable', processing_state: 'working', processing_key: 'claim-b' }];
   const { Crm } = loadGs(resolve(ROOT, 'src/Crm.gs'), { names: ['Crm'] });
   Crm.readAll = () => rows;
   Crm.updateRow = (...args) => updates.push(args);
   Crm.Runtime = { withScriptLock: (_name, _waitMs, fn) => fn() };
 
-  assert.equal(Crm.releaseClaim('Contacts', 'different-key'), false);
-  assert.equal(Crm.releaseClaim('Contacts', 'contact-stable'), true);
+  assert.equal(Crm.releaseClaim('Contacts', 'contact-stable', 'claim-a'), false);
+  assert.equal(updates.length, 0);
+  assert.equal(Crm.releaseClaim('Contacts', 'contact-stable', 'claim-b'), true);
   assert.equal(updates[0][1], 44);
   assert.equal(updates[0][2].processing_state, '');
   assert.equal(updates[0][2].processing_key, '');

@@ -8,6 +8,7 @@
  */
 const Sources = {
   lastFailureReport_: [],
+  MAX_RESPONSE_CHARS_: 200000,
 
   ingest(cap) {
     cap = cap || Config.tunable('DAILY_SOURCE_CAP');
@@ -16,12 +17,14 @@ const Sources = {
     const found = [];
     const failures = [];
     this.lastFailureReport_ = failures;
+    this.failureContext_ = failures;
     try { Array.prototype.push.apply(found, this.fromJSearch_()); } catch (e) { this.recordFailure_(failures, 'JSearch'); }
     try { Array.prototype.push.apply(found, this.fromAdzuna()); } catch (e) { this.recordFailure_(failures, 'Adzuna'); }
     Config.atsBoards().forEach(function (b) {
       try { Array.prototype.push.apply(found, self.fromAts(b)); }
       catch (e) { self.recordFailure_(failures, 'ATS ' + b.type); }
     });
+    this.failureContext_ = null;
 
     // Read existing ids ONCE. Calling Crm.existsOpportunity per job re-read the
     // whole sheet each time (quadratic, and worse as the sheet grows) - that plus
@@ -82,6 +85,7 @@ const Sources = {
   },
 
   recordFailure_(failures, label) {
+    failures = failures || this.failureContext_ || this.lastFailureReport_;
     if (failures.length >= 20) return;
     const entry = String(label) + ': source request failed';
     failures.push(entry);
@@ -214,7 +218,13 @@ const Sources = {
   getJson_(url) {
     const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
     if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode());
-    return JSON.parse(res.getContentText());
+    return JSON.parse(this.responseBody_(res));
+  },
+
+  responseBody_(res) {
+    const body = String(res.getContentText() || '');
+    if (body.length > this.MAX_RESPONSE_CHARS_) throw new Error('source response too large');
+    return body;
   },
 
   fromAdzuna() {
@@ -233,26 +243,29 @@ const Sources = {
           '&sort_by=date' +          // newest first, so redirects are less likely expired
           '&max_days_old=10' +       // tighter window - stale postings 404 on click
           '&content-type=application/json';
-        const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
-        if (res.getResponseCode() !== 200) { Logger.log('Adzuna ' + country + '/' + what + ' HTTP ' + res.getResponseCode()); return; }
-        const data = JSON.parse(res.getContentText());
-        if (!data || !Array.isArray(data.results)) return;
-        data.results.forEach(function (r) {
-          if (!r || typeof r !== 'object') return;
-          const company = (r.company && r.company.display_name) || 'Unknown';
-          const role = r.title || '';
-          const jurl = r.redirect_url || '';
-          const valid = self.job_(
-            'adzuna:' + country, company, role, jurl,
-            (r.location && r.location.display_name) || '',
-            /remote|work from home|wfh/.test((role + ' ' + (r.description || '')).toLowerCase()),
-            r.created || '', r.description || ''
-          );
-          if (!valid) return;
-          const hay = (role + ' ' + (r.description || '')).toLowerCase();
-          valid.mode = /remote|work from home|wfh/.test(hay) ? 'remote' : '';
-          out.push(valid);
-        });
+        const label = 'Adzuna ' + country + '/' + what;
+        try {
+          const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
+          if (res.getResponseCode() !== 200) { self.recordFailure_(null, label); return; }
+          const data = JSON.parse(self.responseBody_(res));
+          if (!data || !Array.isArray(data.results)) return;
+          data.results.forEach(function (r) {
+            if (!r || typeof r !== 'object') return;
+            const company = (r.company && r.company.display_name) || 'Unknown';
+            const role = r.title || '';
+            const jurl = r.redirect_url || '';
+            const valid = self.job_(
+              'adzuna:' + country, company, role, jurl,
+              (r.location && r.location.display_name) || '',
+              /remote|work from home|wfh/.test((role + ' ' + (r.description || '')).toLowerCase()),
+              r.created || '', r.description || ''
+            );
+            if (!valid) return;
+            const hay = (role + ' ' + (r.description || '')).toLowerCase();
+            valid.mode = /remote|work from home|wfh/.test(hay) ? 'remote' : '';
+            out.push(valid);
+          });
+        } catch (e) { self.recordFailure_(null, label); }
       });
     });
     return out;
@@ -276,29 +289,29 @@ const Sources = {
         '?query=' + encodeURIComponent(what + ' in South Africa') +
         '&country=za' +
         '&date_posted=' + encodeURIComponent(datePosted);
-      const res = UrlFetchApp.fetch(url, {
-        method: 'get',
-        muteHttpExceptions: true,
-        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
-        validateHttpsCertificates: true
-      });
-      if (res.getResponseCode() !== 200) {
-        Logger.log('JSearch HTTP ' + res.getResponseCode());
-        return;
-      }
-      const data = JSON.parse(res.getContentText());
-      self.pickJobs_(data).forEach(function (j) {
-        if (!j || typeof j !== 'object') return;
-        const company = j.employer_name || 'Unknown';
-        const role = j.job_title || '';
-        const jurl = j.job_apply_link || '';
-        if (!jurl) return;
-        const publisher = j.job_publisher || 'jsearch';
-        const loc = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || (j.job_location || '');
-        const valid = self.job_('jsearch:' + publisher, company, role, jurl, loc,
-          j.job_is_remote, j.job_posted_at_datetime_utc || '', j.job_description || '');
-        if (valid) out.push(valid);
-      });
+      const label = 'JSearch ' + what;
+      try {
+        const res = UrlFetchApp.fetch(url, {
+          method: 'get',
+          muteHttpExceptions: true,
+          headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+          validateHttpsCertificates: true
+        });
+        if (res.getResponseCode() !== 200) { self.recordFailure_(null, label); return; }
+        const data = JSON.parse(self.responseBody_(res));
+        self.pickJobs_(data).forEach(function (j) {
+          if (!j || typeof j !== 'object') return;
+          const company = j.employer_name || 'Unknown';
+          const role = j.job_title || '';
+          const jurl = j.job_apply_link || '';
+          if (!jurl) return;
+          const publisher = j.job_publisher || 'jsearch';
+          const loc = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || (j.job_location || '');
+          const valid = self.job_('jsearch:' + publisher, company, role, jurl, loc,
+            j.job_is_remote, j.job_posted_at_datetime_utc || '', j.job_description || '');
+          if (valid) out.push(valid);
+        });
+      } catch (e) { self.recordFailure_(null, label); }
     });
     return out;
   },

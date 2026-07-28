@@ -26,7 +26,7 @@ function diagnose() {
       const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
       out.push('  HTTP ' + res.getResponseCode());
       try {
-        const d = JSON.parse(res.getContentText());
+        const d = JSON.parse(diagnosticResponseBody_(res));
         out.push('  response shape: ' + (d && Array.isArray(d.results) ? 'valid' : 'unexpected'));
       } catch (e) { out.push('  response shape: invalid JSON'); }
     }
@@ -50,7 +50,7 @@ function diagnose() {
       if (res.getResponseCode() !== 200) out.push('  response shape: unavailable');
       else {
         try {
-          const d = JSON.parse(res.getContentText());
+          const d = JSON.parse(diagnosticResponseBody_(res));
           out.push('  response shape: ' + (Sources.pickJobs_(d).length ? 'valid' : 'empty or unexpected'));
         } catch (e) { out.push('  response shape: invalid JSON'); }
       }
@@ -124,4 +124,10 @@ function pruneDeadLinks() {
     Alerts.notify('pruneDeadLinks', e);
     throw e;
   }
+}
+
+function diagnosticResponseBody_(res) {
+  const body = String(res.getContentText() || '');
+  if (body.length > 20000) throw new Error('diagnostic response too large');
+  return body;
 }

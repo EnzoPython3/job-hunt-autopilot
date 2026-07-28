@@ -261,6 +261,8 @@ const Alerts = {
  * Called from GAS via UrlFetchApp. The API key lives in Script Properties.
  */
 const Gemini = {
+  RETRY_COUNT: 3,
+
   endpoint_(model) {
     return 'https://generativelanguage.googleapis.com/v1beta/models/' +
       encodeURIComponent(model) + ':generateContent';
@@ -275,7 +277,7 @@ const Gemini = {
     opts = opts || {};
     const key = Config.require(Config.KEYS.GEMINI_API_KEY);
     const model = Config.get(Config.KEYS.GEMINI_MODEL) || Config.defaults.GEMINI_MODEL;
-    const url = this.endpoint_(model) + '?key=' + encodeURIComponent(key);
+    const url = this.endpoint_(model);
 
     const buildPayload_ = function (includeThinkingConfig) {
       const genConfig = {
@@ -305,53 +307,69 @@ const Gemini = {
 
     let text;
     try {
-      text = this.fetchWithRetry_(url, buildPayload_(true));
+      text = this.fetchWithRetry_(url, buildPayload_(true), opts.retryCount);
     } catch (e) {
-      if (String(e).indexOf('HTTP 400') !== -1) {
-        text = this.fetchWithRetry_(url, buildPayload_(false));
+      if (e && e.unsupportedThinkingConfig) {
+        text = this.fetchWithRetry_(url, buildPayload_(false), opts.retryCount);
       } else {
         throw e;
       }
     }
     if (opts.json) {
       try { return JSON.parse(text); }
-      catch (e) { throw new Error('Gemini did not return valid JSON: ' + e + ' :: ' + String(text).slice(0, 300)); }
+      catch (e) { throw new Error('Gemini did not return valid JSON'); }
     }
     return text;
   },
 
-  fetchWithRetry_(url, payload) {
+  fetchWithRetry_(url, payload, configuredRetries) {
+    let retries = configuredRetries == null ? this.RETRY_COUNT : Number(configuredRetries);
+    if (!isFinite(retries) || retries < 0) retries = this.RETRY_COUNT;
+    retries = Math.min(Math.floor(retries), this.RETRY_COUNT);
     const options = {
       method: 'post',
       contentType: 'application/json',
       payload: JSON.stringify(payload),
+      headers: { 'x-goog-api-key': Config.require(Config.KEYS.GEMINI_API_KEY) },
       muteHttpExceptions: true
     };
-    let lastErr = '';
-    for (let attempt = 0; attempt < 4; attempt++) {
+    let lastCode = 0;
+    for (let attempt = 0; attempt <= retries; attempt++) {
       const res = UrlFetchApp.fetch(url, options);
       const code = res.getResponseCode();
       const body = res.getContentText();
-      if (code === 200) return this.extractText_(JSON.parse(body));
-      lastErr = 'HTTP ' + code + ': ' + String(body).slice(0, 300);
-      if (code === 429 || code >= 500) {
+      if (code === 200) {
+        let json;
+        try { json = JSON.parse(body); }
+        catch (e) { throw new Error('Gemini returned invalid response'); }
+        return this.extractText_(json);
+      }
+      lastCode = code;
+      if (code === 400 && this.isUnsupportedThinkingConfigError_(body)) {
+        const thinkingError = new Error('Gemini request failed: HTTP 400');
+        thinkingError.unsupportedThinkingConfig = true;
+        throw thinkingError;
+      }
+      if ((code === 429 || code >= 500) && attempt < retries) {
         Utilities.sleep(Math.pow(2, attempt) * 1000);
         continue;
       }
-      break; // non-retryable
+      break;
     }
-    throw new Error('Gemini request failed: ' + lastErr);
+    throw new Error('Gemini request failed: HTTP ' + lastCode);
   },
 
   extractText_(json) {
-    const cand = json && json.candidates && json.candidates[0];
-    if (!cand) {
-      const fb = json && json.promptFeedback ? JSON.stringify(json.promptFeedback) : '';
-      throw new Error('Gemini returned no candidates. ' + fb);
-    }
-    const parts = cand.content && cand.content.parts;
-    if (!parts || !parts.length) throw new Error('Gemini candidate had no parts.');
-    return parts.map(function (p) { return p.text || ''; }).join('');
+    return Validation.validateGeminiTextResponse(json);
+  },
+
+  isUnsupportedThinkingConfigError_(body) {
+    let json;
+    try { json = JSON.parse(body); } catch (e) { return false; }
+    const error = json && json.error;
+    const message = error && typeof error.message === 'string' ? error.message : '';
+    return /thinkingConfig/i.test(message) &&
+      /(unsupported|not supported|unknown(?: field| name)?|unrecognised|unrecognized)/i.test(message);
   }
 };
 
@@ -982,7 +1000,30 @@ const Match = {
       candidate: JSON.stringify(Config.promptCandidate()),
       job: JSON.stringify({ company: opp.company, role: opp.role, location: opp.location, mode: opp.mode, url: opp.url })
     });
-    return Gemini.generate(prompt, { json: true, schema: this.SCHEMA, temperature: 0.2, maxOutputTokens: 700 });
+    return this.validateScore_(Gemini.generate(prompt, {
+      json: true, schema: this.SCHEMA, temperature: 0.2, maxOutputTokens: 700
+    }));
+  },
+
+  validateScore_(result) {
+    const invalid = function (message) {
+      const error = new Error('Invalid Gemini score: ' + message);
+      error.scoreValidation = true;
+      throw error;
+    };
+    if (!result || typeof result !== 'object' || Array.isArray(result)) invalid('object required');
+    if (typeof result.fit_score !== 'number' || !isFinite(result.fit_score) ||
+        Math.floor(result.fit_score) !== result.fit_score || result.fit_score < 0 || result.fit_score > 100) {
+      invalid('fit_score must be an integer from 0 to 100');
+    }
+    if (typeof result.track !== 'string' || !result.track.trim()) invalid('track is required');
+    if (typeof result.rationale !== 'string' || !result.rationale.trim()) invalid('rationale is required');
+    ['matched_keywords', 'missing_keywords'].forEach(function (key) {
+      if (result[key] !== undefined && (!Array.isArray(result[key]) || result[key].some(function (item) {
+        return typeof item !== 'string';
+      }))) invalid(key + ' must be an array of strings');
+    });
+    return result;
   },
 
   scoreQueue(chunk) {
@@ -1004,9 +1045,11 @@ const Match = {
         if (pass) { self.pushToApprovals_(opp, r); queued++; }
       } catch (e) {
         Logger.log('score ' + opp.id + ': ' + e);
-        Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
-          status: 'scored', rationale: 'score error: ' + e, updated_at: new Date()
-        });
+        if (!e || !e.scoreValidation) {
+          Crm.updateRow(Crm.TABS.OPPORTUNITIES, opp._row, {
+            status: 'scored', rationale: 'score error: ' + e, updated_at: new Date()
+          });
+        }
       }
     });
     return { scored: scored, queued: queued };

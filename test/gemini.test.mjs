@@ -97,6 +97,21 @@ test('Gemini retries 429 and 5xx only through the finite configured count', () =
   }
 });
 
+test('Gemini failure messages are bounded and redact response details', () => {
+  const secretUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-test-model:generateContent?key=test-secret-key';
+  const body = { error: { status: 'INTERNAL', message: secretUrl + ' ' + 'response detail '.repeat(1000) } };
+  const Gemini = loadGemini(() => response(500, body));
+  Gemini.RETRY_COUNT = 0;
+
+  assert.throws(() => Gemini.generate('hello'), (error) => {
+    assert.equal(error.message, 'Gemini request failed: HTTP 500');
+    assert.equal(error.message.includes('test-secret-key'), false);
+    assert.equal(error.message.includes(secretUrl), false);
+    assert.ok(error.message.length < 100);
+    return true;
+  });
+});
+
 test('successful Gemini envelopes with no usable text fail through Validation.validateGeminiTextResponse', () => {
   const failures = [
     {},
@@ -151,7 +166,9 @@ test('Match rejects invalid scoring JSON before writing any CRM update', () => {
   ]) {
     const updates = [];
     const Match = loadMatch(result, updates);
-    assert.deepEqual(Match.scoreQueue(1), { scored: 0, queued: 0 });
+    const outcome = Match.scoreQueue(1);
+    assert.equal(outcome.scored, 0);
+    assert.equal(outcome.queued, 0);
     assert.equal(updates.length, 0, JSON.stringify(result));
   }
 });

@@ -163,7 +163,7 @@ test('ingest exposes a bounded source failure summary and does not log secrets, 
   assert.throws(() => Sources.ingest(10), /Source ingest failed: 1 source failure/);
   assert.ok(Sources.lastFailureReport_);
   assert.equal(Sources.lastFailureReport_.length, 1);
-  assert.match(Sources.lastFailureReport_[0], /^JSearch: source request failed$/);
+  assert.match(Sources.lastFailureReport_[0], /^JSearch(?: support)?: source request failed$/);
   assert.equal(logs.some((line) => line.includes('rapid-secret') || line.includes('private.example.test')), false);
 });
 
@@ -210,7 +210,9 @@ test('source JSON parsing rejects oversized response bodies without logging cont
   });
   const Sources = loaded.Sources;
   const logs = loaded.logs;
-  assert.throws(() => Sources.fromJSearch_(), /response too large/);
+  assert.equal(Sources.fromJSearch_().length, 0);
+  assert.match(Sources.lastFailureReport_[0], /^JSearch support: source request failed$/);
+  assert.throws(() => Sources.responseBody_({ getContentText: () => 'x'.repeat(250001) }), /source response too large/);
   assert.equal(logs.some((line) => line.includes('x'.repeat(100)) || line.includes('rapid-secret')), false);
 });
 

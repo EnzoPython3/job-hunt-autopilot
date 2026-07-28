@@ -83,7 +83,7 @@ function diagnose() {
 function pruneDeadLinks() {
   try {
     Crm.ensureSchema();
-    const MAX_CHECKS = 80;                          // lower cap: slow redirect-follows add up
+    const MAX_CHECKS = Config.tunable('MAINTENANCE_CHECKS');
     const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
     let budget = MAX_CHECKS;
     let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;

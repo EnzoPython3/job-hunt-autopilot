@@ -74,7 +74,7 @@ test('make-release rejects a tracked release secret in a disposable repository',
     execFileSync('git', ['config', 'user.name', 'Release Test'], { cwd: fixture });
     execFileSync('git', ['add', '-A'], { cwd: fixture });
     execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: fixture });
-    writeFileSync(join(fixture, 'README.md'), `${readFileSync(join(fixture, 'README.md'), 'utf8')}\nAIzaSyAaaaaaaaaaaaaaaaaaaaaaaaa\n`);
+    writeFileSync(join(fixture, 'README.md'), `${readFileSync(join(fixture, 'README.md'), 'utf8')}\nAIzaSyA${'a'.repeat(30)}\n`);
     execFileSync('git', ['add', 'README.md'], { cwd: fixture });
     execFileSync('git', ['commit', '-qm', 'fixture secret'], { cwd: fixture });
     const output = mkdtempSync(join(tmpdir(), 'job-hunt-release-output-'));

@@ -104,7 +104,7 @@ function releaseContents() {
     .concat([{ file: 'manual-install/Code.gs', text: readFileSync(resolve(ROOT, 'manual-install/Code.gs'), 'utf8') }]);
 }
 
-function forbiddenReleaseHits() {
+function forbiddenReleaseHits(contents = releaseContents()) {
   const privateName = ['Rele', 'bogile'].join('');
   const maintainerName = ['Enzo', 'Snyman'].join(' ');
   const privateNames = [privateName, ['Gabi', 'sile'].join(''), ['Nt', 'lama'].join(''),
@@ -114,7 +114,7 @@ function forbiddenReleaseHits() {
   const apiKey = /(?:AIza[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z]{20,}|(?:api[_ -]?key|app[_ -]?key)["']?\s*[:=]\s*["']?(?!your[-_]|example|<)[A-Za-z0-9_-]{24,})/ig;
   const hits = [];
 
-  for (const { file, text } of releaseContents()) {
+  for (const { file, text } of contents) {
     const lines = text.split('\n');
     lines.forEach((line, index) => {
       const isLicenceAttribution = file === 'LICENSE' && line.includes('Copyright (c) 2026 ');
@@ -133,6 +133,18 @@ function forbiddenReleaseHits() {
 
 test('tracked release content contains no maintainer PII, personal LinkedIn URL, live email, or API key', () => {
   assert.deepEqual(forbiddenReleaseHits(), []);
+});
+
+test('release scan flags ordinary gmail and common two-label live email domains', () => {
+  const hits = forbiddenReleaseHits([{
+    file: 'fixture.txt',
+    text: 'Contact person@gmail.com\nhiring@company.co.uk\nrecruiter@agency.com.au'
+  }]);
+  assert.deepEqual(hits, [
+    'fixture.txt:1: live-looking email',
+    'fixture.txt:2: live-looking email',
+    'fixture.txt:3: live-looking email'
+  ]);
 });
 
 test('bundle order includes Runtime and Validation exactly once and bundle sections match', () => {

@@ -6,6 +6,7 @@ import test from 'node:test';
 import { loadGs } from './helpers/load-gs.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const Validation = loadGs(resolve(ROOT, 'src/Validation.gs'), { names: ['Validation'] }).Validation;
 
 function response(code, body, headers = {}) {
   return {
@@ -29,6 +30,7 @@ function loadSources({ fetch = () => response(200, {}), properties = {}, boards 
       }
     },
     globals: {
+      Validation,
       Config: {
         KEYS: { ADZUNA_APP_ID: 'ADZUNA_APP_ID', ADZUNA_APP_KEY: 'ADZUNA_APP_KEY', RAPIDAPI_KEY: 'RAPIDAPI_KEY' },
         get: (key) => properties[key] || null,
@@ -91,6 +93,24 @@ test('ATS adapters return empty for null, object, and missing-array envelopes', 
   }
 });
 
+test('all source adapters skip malformed individual rows', () => {
+  const fixtures = [
+    ['adzuna', { results: [null, {}, { title: 'Adzuna role', redirect_url: 'https://jobs.example.test/a' }] }],
+    ['lever', [null, {}, { text: 'Lever role', hostedUrl: 'https://jobs.example.test/l' }]],
+    ['ashby', { jobs: [null, {}, { title: 'Ashby role', jobUrl: 'https://jobs.example.test/as' }] }],
+    ['workable', { jobs: [null, {}, { title: 'Workable role', url: 'https://jobs.example.test/w' }] }]
+  ];
+  for (const [type, body] of fixtures) {
+    const { Sources } = loadSources({
+      properties: type === 'adzuna' ? { ADZUNA_APP_ID: 'app-id', ADZUNA_APP_KEY: 'app-key' } : {},
+      fetch: () => response(200, body)
+    });
+    const jobs = type === 'adzuna' ? Sources.fromAdzuna()
+      : Sources.fromAts({ type, slug: 'example' });
+    assert.equal(jobs.length, 1, type);
+  }
+});
+
 test('resolveUrl_ enforces HTTPS and certificate validation for redirects', () => {
   const calls = [];
   const { Sources } = loadSources({
@@ -140,7 +160,7 @@ test('ingest exposes a bounded source failure summary and does not log secrets, 
     properties: { RAPIDAPI_KEY: 'rapid-secret' },
     fetch: () => { throw new Error('body contains rapid-secret and https://private.example.test/x'); }
   });
-  Sources.ingest(10);
+  assert.throws(() => Sources.ingest(10), /Source ingest failed: 1 source failure/);
   assert.ok(Sources.lastFailureReport_);
   assert.equal(Sources.lastFailureReport_.length, 1);
   assert.match(Sources.lastFailureReport_[0], /^JSearch: source request failed$/);

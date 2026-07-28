@@ -38,7 +38,8 @@ Apps Script editor -> Project Settings (gear) -> Script Properties -> add:
   default in `src/Config.gs`. See `config.example.json` for the shape.
 - `ALERT_EMAIL` - optional, your email address for failure-alert emails when a scheduled
   trigger run errors out; defaults to a placeholder (see `src/Alerts.gs`) - leave unset and
-  alerts have nowhere real to go, since `you@example.com` isn't a live inbox
+  alerts have nowhere real to go, since `you@example.com` isn't a live inbox. Easiest to set
+  via the **Setup** tab's ALERTS section rather than here directly (see `Onboarding.gs`).
 
 (`SHEET_ID` and `DRIVE_FOLDER_ID` are created for you in step 5.)
 

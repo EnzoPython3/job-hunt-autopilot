@@ -10,7 +10,9 @@ const Alerts = {
         subject: 'Job-Hunt Autopilot: ' + fnName + ' failed',
         body: 'The scheduled job "' + fnName + '" failed:\n\n' +
           (err && err.stack ? err.stack : String(err)) +
-          '\n\nCheck the Apps Script execution log for full details.',
+          '\n\nCheck the Apps Script execution log for full details.' +
+          '\n\nStuck? Open an issue: https://github.com/EnzoPython3/job-hunt-autopilot/issues' +
+          '\nor DM Enzo on LinkedIn: https://www.linkedin.com/in/enzo-snyman/',
         name: 'Job-Hunt Autopilot'
       });
     } catch (e) {

@@ -35,6 +35,8 @@ const SETUP_FIELDS = [
   { type: 'prop',   label: 'Adzuna App Key',                       target: 'ADZUNA_APP_KEY', secret: true },
   { type: 'prop',   label: 'RapidAPI key (optional, for JSearch)', target: 'RAPIDAPI_KEY', secret: true },
   { type: 'prop',   label: 'Master CV Google Doc ID (the Doc that contains a {{SUMMARY}} token)', target: 'MASTER_CV_DOC_ID' },
+  { type: 'section', label: 'ALERTS  -  optional but recommended' },
+  { type: 'prop',   label: 'Email for failure alerts (blank = alerts have nowhere real to go)', target: 'ALERT_EMAIL', clearable: true },
   { type: 'section', label: 'SEARCH FILTERS  -  optional; blank = not set (blanking a filled row clears that filter on Save)' },
   { type: 'prop',   label: 'Keep ONLY these regions, comma-separated (blank = anywhere)',              target: 'ALLOWED_REGIONS', clearable: true },
   { type: 'prop',   label: 'Drop these sub-areas even if in range, comma-separated (blank = none)',    target: 'EXCLUDED_REGIONS', clearable: true },

@@ -161,6 +161,14 @@ In the script tab, run **`diagnose`** and read the log - it checks each key and 
 source and tells you what's missing. If you've set an alert email (Part 4), a failure also
 emails you directly.
 
+Runs are designed to recover safely. A temporary API or quota failure is recorded on the
+affected row and can be retried after you correct the cause. Overlapping triggers use locks
+and stable claims, and a retry reuses saved CV, cover, interview, and Gmail draft IDs. Do
+not delete a row to fix a duplicate; inspect its status and `failure_message` first.
+
+The tool is draft-only. It never sends Gmail or submits a portal application by itself. You
+must review every draft and click Send, and submit portal applications manually.
+
 ## Already set up and want the latest fixes?
 See **[Updating](README.md#updating)** in the README - short version: your keys, profile,
 and Sheet data are untouched by a code update, so it's always safe to grab the latest.

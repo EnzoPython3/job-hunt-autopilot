@@ -22,6 +22,28 @@ Run `draftAgencyOutreach` (or let it run on a light schedule). It creates one Gm
 - `prepInterviews` - daily 09:00: generate an interview-prep pack (Google Doc) for any role you mark `interview`.
 - `weeklyReport` - Monday 07:00: funnel summary draft vs the 2-5 interview target.
 
+## Recovery states and retry behaviour
+
+Rows use visible states rather than disappearing when a run is interrupted:
+
+- `sourced` - waiting for fit scoring.
+- `queued` - scored and waiting for human approval.
+- `processing` - claimed by one worker using a stable opportunity or contact ID, owner token,
+  and expiry time.
+- `failed` - a bounded `failure_message` is stored and the row remains eligible for retry.
+- `sent`, `submitted`, `responded`, and `interview` - human-managed progress states.
+
+The shared script lock protects each trigger's critical section. Per-item claims prevent
+overlapping workers from duplicating work, and expired claims are reclaimable. A worker
+releases its claim in a `finally` path; an old worker cannot release a newer token. Deadlines
+and configured caps stop long runs before the Apps Script execution limit. Retries reuse
+stored CV, cover, interview, and draft IDs before creating anything new.
+
+For recovery, read `failure_message`, correct the key, source, recipient, or data problem,
+then rerun the relevant function. Do not clear processing fields or duplicate rows manually.
+If a trigger repeatedly fails, pause or remove it, run `diagnose`, correct configuration,
+and complete the disposable smoke test before restoring the schedule.
+
 ## Tuning (CRM `Config` tab - no redeploy needed)
 - `SCORE_THRESHOLD` (default 62): lower = more volume in Approvals, higher = stricter.
 - `DAILY_SOURCE_CAP`, `CHUNK_SIZE`, `AGENCY_DRAFTS_PER_RUN`: throughput knobs.
@@ -50,3 +72,8 @@ Applied at ingest, before a job is even stored, so they save Gemini scoring quot
 - Nothing sends itself. Drafts only.
 - The CV/cover prompts forbid fabrication; spot-check the first few tailored outputs.
 - Keep your current salary off every output (it never appears; salary is internal only).
+- Gmail operations create drafts only. Human review and the Gmail Send action are required
+  for every outreach message; portal applications are always manual.
+- Before any live update, complete `npm test`, syntax and bundle checks, ZIP inspection, and
+  the authenticated disposable Apps Script smoke test in `docs/SETUP.md`. Missing smoke
+  evidence blocks deployment.

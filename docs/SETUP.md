@@ -82,11 +82,55 @@ Run manually in this order and check the CRM after each:
 
 When happy, run **`installTriggers`** to start the daily/hourly loop.
 
+## 8. Production verification gate
+
+Before pushing or sharing a release, run the local checks:
+
+```
+npm test
+for f in src/*.gs manual-install/Code.gs; do cp "$f" /tmp/job-hunt-syntax.js && node --check /tmp/job-hunt-syntax.js; done
+bash tools/bundle.sh
+git diff --exit-code -- manual-install/Code.gs
+```
+
+The release script repeats the clean-tree, bundle freshness, provenance, and public-content
+checks:
+
+```
+RELEASE_DIR=/tmp/job-hunt-releases bash scripts/make-release.sh 2026-07-29
+```
+
+Do not update a live project until these checks and the authenticated smoke test below pass.
+If the smoke test is unavailable, the release is blocked.
+
+### Authenticated disposable Apps Script smoke test
+
+Use a disposable Google account or project, spreadsheet, Drive folder, Gmail account, and
+low-quota test API keys. Never use the candidate's production CRM, CV, inbox, or live keys.
+
+1. Create a standalone Apps Script project and enable the Apps Script API. Push `src/` with
+   `clasp`, or paste the generated `manual-install/Code.gs`.
+2. Set only disposable Script Properties and a test candidate profile. Confirm keys are not
+   present in code, URLs, logs, or sheet cells.
+3. Run `setupProject()` and confirm the CRM and Drive folder are created.
+4. Run `diagnose()` and confirm it reports key presence without printing values.
+5. Run `dailySource()` with a narrow test query, then `scoreQueue()`. Confirm empty or
+   malformed responses produce bounded alerts and no malformed rows.
+6. Approve one disposable opportunity and run `prepApprovedBatch()`. Confirm CV and cover
+   artefacts are reused on retry and Gmail contains a draft, never a sent message.
+7. Run `weeklyReport()`, inspect the draft, then delete the disposable project and data.
+
+Record the project, test date, commit, commands, and results in the release notes. This is
+an authenticated runtime check, not a substitute for local tests.
+
 ## Notes
 - Everything is a **draft** - review and send/submit by hand.
 - Tune behaviour in the CRM `Config` tab (e.g. lower `SCORE_THRESHOLD` for more volume).
 - The manifest timezone is `Africa/Johannesburg` (`src/appsscript.json`) - change it to
   your own so the daily 06:00 trigger fires at your local morning.
+- Scheduled work uses script locks and stable per-item claims. Active claims are skipped,
+  expired claims can be retried, item failures remain visible, and stored artefact or draft
+  IDs are reused after interruption.
 
 ## Prerequisites (developer path)
 - **Node.js** 18+ and **npm** (for `clasp`).

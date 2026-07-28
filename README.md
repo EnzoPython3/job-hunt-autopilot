@@ -46,6 +46,11 @@ Goal: help book **2-5 interviews/week**.
 - **Compliant sourcing** - official APIs (JSearch/RapidAPI, Adzuna) + public ATS feeds only;
   no scraping; portals are human-submitted.
 - **Secrets** live in Script Properties, never in git.
+- **Recovery-aware** - locks, stable claims, deadlines, retryable failure states, and
+  persisted artefact and draft IDs prevent overlapping or interrupted runs from duplicating
+  work.
+- **Release-gated** - local tests, syntax checks, bundle parity, ZIP inspection, and an
+  authenticated disposable Apps Script smoke test are required before a live update.
 
 ## Repo map
 - `QUICKSTART.md` - non-technical setup guide (read this first).
@@ -84,6 +89,10 @@ every answer you've already typed, so this is safe to re-run any time. If you'd 
 set `GEMINI_MODEL` as a Script Property to work around a retired model, that override still
 wins after updating - clear it (Project Settings > Script Properties, or blank it via the
 Setup tab if it's listed there) to pick up the new default.
+
+For maintainer release and rollback procedures, see [docs/RELEASES.md](docs/RELEASES.md).
+Do not update a live project when the disposable smoke test or any local release gate is
+missing.
 
 ## Licence
 [MIT](LICENSE). Use it, fork it, adapt it. Contributions welcome.

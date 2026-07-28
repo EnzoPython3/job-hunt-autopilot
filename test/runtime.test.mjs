@@ -122,6 +122,113 @@ test('Match limits new approval rows per scoring run', () => {
   assert.equal(updates.length, 2);
 });
 
+test('Match claims each opportunity before Gemini and skips an active claim', () => {
+  const events = [];
+  const opportunity = {
+    _row: 2, id: 'opp-active', company: 'Example', role: 'Support', location: 'Remote',
+    mode: 'remote', url: 'https://example.test/job/active'
+  };
+  const Match = loadGs(resolve(ROOT, 'src/Match.gs'), {
+    globals: {
+      Prompts: { render: () => 'prompt' },
+      Gemini: { generate: () => { throw new Error('Gemini must not run'); } },
+      Config: {
+        promptCandidate: () => ({ name: 'Candidate' }),
+        tunable: (key) => ({ CHUNK_SIZE: 1, SCORE_THRESHOLD: 62, DAILY_APPROVAL_N: 1 }[key])
+      },
+      Crm: {
+        TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' },
+        listByStatus: () => [opportunity],
+        claim: (...args) => events.push(['claim', ...args]) || false,
+        releaseClaim: (...args) => events.push(['release', ...args]),
+        updateRow: (...args) => events.push(['update', ...args]),
+        upsertApproval: () => { throw new Error('approval must not run'); }
+      },
+      Logger: { log: () => {} }
+    },
+    names: ['Match']
+  }).Match;
+
+  const result = Match.scoreQueue(1);
+  assert.equal(result.scored, 0);
+  assert.equal(result.queued, 0);
+  assert.equal(events.length, 1);
+  assert.equal(events[0][0], 'claim');
+  assert.equal(events[0][1], 'Opportunities');
+  assert.equal(events[0][2], 'opp-active');
+});
+
+test('Match verifies the approval row before advancing the opportunity status', () => {
+  const events = [];
+  const opportunity = {
+    _row: 2, id: 'opp-approved', company: 'Example', role: 'Support', location: 'Remote',
+    mode: 'remote', url: 'https://example.test/job/approved'
+  };
+  const approval = { id: 'opp-approved', fit_score: 90, track: 'support', rationale: 'good fit' };
+  const Match = loadGs(resolve(ROOT, 'src/Match.gs'), {
+    globals: {
+      Prompts: { render: () => 'prompt' },
+      Gemini: { generate: () => { events.push(['gemini']); return approval; } },
+      Config: {
+        promptCandidate: () => ({ name: 'Candidate' }),
+        tunable: (key) => ({ CHUNK_SIZE: 1, SCORE_THRESHOLD: 62, DAILY_APPROVAL_N: 1 }[key])
+      },
+      Crm: {
+        TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' },
+        listByStatus: () => [opportunity],
+        claim: (...args) => events.push(['claim', ...args]) || true,
+        releaseClaim: (...args) => events.push(['release', ...args]),
+        upsertApproval: (...args) => events.push(['upsert', ...args]) || approval,
+        findApproval: (...args) => events.push(['verify', ...args]) || approval,
+        updateRow: (...args) => events.push(['update', ...args]),
+      },
+      Logger: { log: () => {} }
+    },
+    names: ['Match']
+  }).Match;
+
+  const result = Match.scoreQueue(1);
+  assert.equal(result.scored, 1);
+  assert.equal(result.queued, 1);
+  assert.deepEqual(events.map((event) => event[0]), ['claim', 'gemini', 'upsert', 'verify', 'update', 'release']);
+  assert.equal(events[4][2].status, 'queued_for_approval');
+});
+
+test('Match records a retryable scoring failure and releases the claim', () => {
+  const events = [];
+  const opportunity = {
+    _row: 2, id: 'opp-retry', company: 'Example', role: 'Support', location: 'Remote',
+    mode: 'remote', url: 'https://example.test/job/retry'
+  };
+  const Match = loadGs(resolve(ROOT, 'src/Match.gs'), {
+    globals: {
+      Prompts: { render: () => 'prompt' },
+      Gemini: { generate: () => { throw new Error('temporary Gemini failure'); } },
+      Config: {
+        promptCandidate: () => ({ name: 'Candidate' }),
+        tunable: (key) => ({ CHUNK_SIZE: 1, SCORE_THRESHOLD: 62, DAILY_APPROVAL_N: 1 }[key])
+      },
+      Crm: {
+        TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' },
+        listByStatus: () => [opportunity],
+        claim: (...args) => events.push(['claim', ...args]) || true,
+        releaseClaim: (...args) => events.push(['release', ...args]),
+        updateRow: (...args) => events.push(['update', ...args]),
+      },
+      Logger: { log: () => {} }
+    },
+    names: ['Match']
+  }).Match;
+
+  const result = Match.scoreQueue(1);
+  assert.equal(result.scored, 0);
+  assert.equal(result.queued, 0);
+  const update = events.find((event) => event[0] === 'update');
+  assert.equal(update[2].status, 'sourced');
+  assert.match(update[2].failure_message, /temporary Gemini failure/);
+  assert.deepEqual(events.map((event) => event[0]), ['claim', 'update', 'release']);
+});
+
 test('pruneDeadLinks uses the configured maintenance-check maximum', () => {
   let checks = 0;
   const diagnostics = loadGs(resolve(ROOT, 'src/Diagnostics.gs'), {

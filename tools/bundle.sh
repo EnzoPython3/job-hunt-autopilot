@@ -17,6 +17,13 @@ OUT="$ROOT/manual-install/Code.gs"
 ORDER=(Config Runtime Alerts Gemini Prompts Crm Sources Match Tailor MasterCv Outreach Digest \
        InterviewPrep Report Loop Triggers SheetUi Onboarding Setup Diagnostics Validation)
 
+# Keep shared helpers present once in both the source order and generated bundle.
+for required in Runtime Validation; do
+  count=0
+  for name in "${ORDER[@]}"; do [ "$name" = "$required" ] && count=$((count + 1)); done
+  [ "$count" -eq 1 ] || { echo "error: $required must appear exactly once in ORDER" >&2; exit 1; }
+done
+
 # Safety net: every src/*.gs must be listed in ORDER, or the bundle would silently
 # drop it.
 for f in "$ROOT"/src/*.gs; do

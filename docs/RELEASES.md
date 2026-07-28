@@ -28,11 +28,16 @@ the release from the pushed `main`.
    back if a release turns out to have a problem).
 3. Announce the release with the zip filename and version.
 
-## Before every release - PII sweep
-This repo is a public template - anything sensitive here is either a bug or, if the sample
-data legitimately needs it (none currently does), an explicit decision. Before sharing:
+For project support, use the repository's issue tracker and documentation rather than a
+personal contact address or social profile.
+
+## Before every release - public-content sweep
+This repo is a public template. Anything sensitive in tracked release content is a bug and
+must be removed before building or sharing the zip. Run the dependency-free release-content
+test and inspect any reported file and line:
 ```
-grep -rInE 'Lebo|Snyman|Relebogile|lebosnyman3|Inceptum|Gabisile|Ntlama' --exclude-dir=.git .
+npm test -- --test-name-pattern='tracked release content'
 ```
-The only expected hit is the LICENSE copyright line. Anything else - stop and fix it before
-building or sharing the zip.
+The scan covers maintainer identity, personal LinkedIn URLs, live-looking email addresses,
+and API-key patterns. The licence attribution uses the project contributor name and is not a
+personal support channel.

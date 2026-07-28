@@ -16,7 +16,7 @@ function response(code, body, headers = {}) {
   };
 }
 
-function loadSources({ fetch = () => response(200, {}), properties = {}, boards = [], existing = [] } = {}) {
+function loadSources({ fetch = () => response(200, {}), properties = {}, boards = [], existing = [], adzunaQueries = ['support'], jsearchQueries = ['support'] } = {}) {
   const logs = [];
   const alerts = [];
   const rows = [];
@@ -37,8 +37,8 @@ function loadSources({ fetch = () => response(200, {}), properties = {}, boards 
         tunable: () => 10,
         atsBoards: () => boards,
         adzunaCountries: () => ['za'],
-        adzunaQueries: () => ['support'],
-        jsearchQueries: () => ['support'],
+        adzunaQueries: () => adzunaQueries,
+        jsearchQueries: () => jsearchQueries,
         jsearchDatePosted: () => 'week',
         allowRemote: () => true,
         excludedRegions: () => [],
@@ -167,6 +167,53 @@ test('ingest exposes a bounded source failure summary and does not log secrets, 
   assert.equal(logs.some((line) => line.includes('rapid-secret') || line.includes('private.example.test')), false);
 });
 
+test('Adzuna records per-request failures while retaining valid rows from later requests', () => {
+  let calls = 0;
+  const { Sources } = loadSources({
+    properties: { ADZUNA_APP_ID: 'app-id', ADZUNA_APP_KEY: 'app-key' },
+    adzunaQueries: ['broken', 'valid'],
+    fetch: () => {
+      calls++;
+      return calls === 1
+        ? response(503, 'provider failure with secret app-key')
+        : response(200, { results: [{ title: 'Valid Adzuna role', redirect_url: 'https://jobs.example.test/a' }] });
+    }
+  });
+  const jobs = Sources.fromAdzuna();
+  assert.equal(jobs.length, 1);
+  assert.equal(Sources.lastFailureReport_.length, 1);
+  assert.match(Sources.lastFailureReport_[0], /^Adzuna za\/broken: source request failed$/);
+});
+
+test('JSearch records malformed JSON per request while retaining later valid rows', () => {
+  let calls = 0;
+  const { Sources } = loadSources({
+    properties: { RAPIDAPI_KEY: 'rapid-secret' },
+    jsearchQueries: ['broken', 'valid'],
+    fetch: () => {
+      calls++;
+      return calls === 1
+        ? response(200, '{"data":')
+        : response(200, { data: [{ employer_name: 'Example', job_title: 'Valid JSearch role', job_apply_link: 'https://jobs.example.test/j' }] });
+    }
+  });
+  const jobs = Sources.fromJSearch_();
+  assert.equal(jobs.length, 1);
+  assert.equal(Sources.lastFailureReport_.length, 1);
+  assert.match(Sources.lastFailureReport_[0], /^JSearch broken: source request failed$/);
+});
+
+test('source JSON parsing rejects oversized response bodies without logging contents', () => {
+  const loaded = loadSources({
+    properties: { RAPIDAPI_KEY: 'rapid-secret' },
+    fetch: () => response(200, 'x'.repeat(250001))
+  });
+  const Sources = loaded.Sources;
+  const logs = loaded.logs;
+  assert.throws(() => Sources.fromJSearch_(), /response too large/);
+  assert.equal(logs.some((line) => line.includes('x'.repeat(100)) || line.includes('rapid-secret')), false);
+});
+
 test('diagnostics report only secret state and bounded status, never secret values or response bodies', () => {
   const logs = [];
   const secret = 'diagnostic-secret';
@@ -179,8 +226,10 @@ test('diagnostics report only secret state and bounded status, never secret valu
     },
     globals: {
       Sources,
+      Config: { tunable: () => 2 },
       Gemini: { generate: () => 'ok' },
-      Crm: { readAll: () => [] }
+      Crm: { TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' }, readAll: () => [], updateRow: () => {} },
+      Alerts: { notify: () => {} }
     },
     names: ['diagnose']
   }).diagnose;
@@ -190,4 +239,27 @@ test('diagnostics report only secret state and bounded status, never secret valu
   assert.equal(report.includes('diagnostic-secret'), false);
   assert.equal(report.includes('private.example.test'), false);
   assert.equal(report.length < 1800, true);
+});
+
+test('pruneDeadLinks uses the configured maintenance check cap', () => {
+  const { Sources } = loadSources();
+  const rows = [
+    { _row: 2, url: 'https://jobs.example.test/1', status: 'sourced' },
+    { _row: 3, url: 'https://jobs.example.test/2', status: 'sourced' },
+    { _row: 4, url: 'https://jobs.example.test/3', status: 'sourced' }
+  ];
+  const diagnostics = loadGs(resolve(ROOT, 'src/Diagnostics.gs'), {
+    services: { Logger: { log: () => {} } },
+    globals: {
+      Sources,
+      Config: { tunable: (key) => key === 'MAINTENANCE_CHECKS' ? 2 : 2 },
+      Crm: { TABS: { OPPORTUNITIES: 'Opportunities', APPROVALS: 'Approvals' }, ensureSchema: () => {}, readAll: (tab) => tab === 'Opportunities' ? rows : [], updateRow: () => {} },
+      Alerts: { notify: () => {} }
+    },
+    names: ['pruneDeadLinks']
+  }).pruneDeadLinks;
+  const report = diagnostics();
+  assert.match(report, /CAPPED/);
+  assert.match(report, /2-check/);
+  assert.equal(report.includes('80-check'), false);
 });

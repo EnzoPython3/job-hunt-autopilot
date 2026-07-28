@@ -16,7 +16,7 @@ function response(code, body, headers = {}) {
   };
 }
 
-function loadSources({ fetch = () => response(200, {}), properties = {}, boards = [], existing = [], adzunaQueries = ['support'], jsearchQueries = ['support'] } = {}) {
+function loadSources({ fetch = () => response(200, {}), properties = {}, boards = [], existing = [], adzunaQueries = ['support'], jsearchQueries = ['support'], lock = null, now = () => 1000, findChecks = [] } = {}) {
   const logs = [];
   const alerts = [];
   const rows = [];
@@ -49,7 +49,13 @@ function loadSources({ fetch = () => response(200, {}), properties = {}, boards 
       Crm: {
         TABS: { OPPORTUNITIES: 'Opportunities' },
         readAll: () => existing,
-        appendRow: (...args) => rows.push(args)
+        appendRow: (...args) => { rows.push(args); existing.push(args[1]); },
+        findOpportunity: (id) => { findChecks.push(id); return existing.find((row) => row.id === id) || null; }
+      },
+      Runtime: {
+        deadlineMs: () => now() + 300000,
+        shouldStop: (deadline) => now() >= deadline,
+        withScriptLock: (_name, _wait, fn) => lock ? lock(fn) : fn()
       },
       Outreach: { harvestEmail_: () => '' },
       Alerts: { notify: (...args) => alerts.push(args) }
@@ -264,4 +270,38 @@ test('pruneDeadLinks uses the configured maintenance check cap', () => {
   assert.match(report, /CAPPED/);
   assert.match(report, /2-check/);
   assert.equal(report.includes('80-check'), false);
+});
+
+test('ingest serialises append phase and rechecks stable IDs before every append', () => {
+  const events = [];
+  const existing = [];
+  const findChecks = [];
+  const loaded = loadSources({
+    properties: { RAPIDAPI_KEY: 'rapid-test-key' },
+    fetch: () => response(200, { data: [
+      { employer_name: 'Example', job_title: 'First role', job_apply_link: 'https://jobs.example.test/1' },
+      { employer_name: 'Example', job_title: 'Second role', job_apply_link: 'https://jobs.example.test/2' }
+    ] }),
+    existing,
+    findChecks,
+    lock: (fn) => { events.push('lock-start'); const result = fn(); events.push('lock-end'); return result; }
+  });
+  const crm = loaded.rows;
+  const result = loaded.Sources.ingest(10);
+  assert.equal(result, 2);
+  assert.deepEqual(events, ['lock-start', 'lock-end']);
+  assert.equal(crm.length, 2);
+  assert.equal(findChecks.length, 2);
+});
+
+test('source adapters stop before a network request when the deadline expires', () => {
+  let calls = 0;
+  const { Sources } = loadSources({
+    properties: { RAPIDAPI_KEY: 'rapid-test-key' },
+    jsearchQueries: ['one', 'two'],
+    now: () => 400001,
+    fetch: () => { calls++; return response(200, { data: [] }); }
+  });
+  assert.equal(Sources.fromJSearch_(400000).length, 0);
+  assert.equal(calls, 0);
 });

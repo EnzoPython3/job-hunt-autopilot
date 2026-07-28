@@ -206,3 +206,66 @@ test('safeHttpsUrl resolves only HTTPS redirect targets', () => {
   assert.equal(Validation.safeHttpsUrl('https://jobs.example.test/next'), 'https://jobs.example.test/next');
   assert.equal(Validation.safeHttpsUrl('http://jobs.example.test/next'), '');
 });
+
+test('morning digest only emits validated HTTPS anchors', () => {
+  const sent = [];
+  const { morningDigest } = loadGs(resolve(ROOT, 'src/Digest.gs'), {
+    services: {
+      SpreadsheetApp: { openById: () => ({ getUrl: () => 'https://sheets.example.test/id' }) },
+      MailApp: { sendEmail: (message) => sent.push(message) },
+      Logger: { log: () => {} }
+    },
+    globals: {
+      Validation: { safeHref: (value) => value === 'https://safe.example.test/job' ? 'https://safe.example.test/job' : '' },
+      Config: {
+        KEYS: { SHEET_ID: 'SHEET_ID' },
+        require: () => 'sheet-id',
+        candidate: () => ({ firstName: '<Candidate>', email: 'candidate@example.test' })
+      },
+      Crm: {
+        ensureSchema: () => {},
+        TABS: { APPROVALS: 'Approvals' },
+        readAll: () => [
+          { fit_score: 90, role: '<Role>', company: '& Co', track: 'email', url: 'https://safe.example.test/job', decision: '' },
+          { fit_score: 80, role: 'Bad', company: 'Bad', track: 'portal', url: 'javascript:alert(1)', decision: '' }
+        ]
+      },
+      Alerts: { notify: () => {} }
+    },
+    names: ['morningDigest']
+  });
+  morningDigest();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].htmlBody, /https:\/\/safe\.example\.test\/job/);
+  assert.equal(sent[0].htmlBody.includes('javascript:'), false);
+  assert.match(sent[0].htmlBody, /&lt;Role&gt;/);
+  assert.match(sent[0].htmlBody, /&amp; Co/);
+});
+
+test('weekly KPI upsert is locked and derives the week in spreadsheet timezone', () => {
+  const events = [];
+  const rows = [{ _row: 2, week_start: '2026-07-27', sourced: 1 }];
+  const Report = loadGs(resolve(ROOT, 'src/Report.gs'), {
+    services: {
+      Utilities: { formatDate: (date, tz) => {
+        assert.equal(tz, 'America/Los_Angeles');
+        return date instanceof Date ? '2026-07-27' : '';
+      } }
+    },
+    globals: {
+      Runtime: { withScriptLock: (name, wait, fn) => { events.push([name, wait]); return fn(); } },
+      Crm: {
+        TABS: { KPIS: 'KPIs' },
+        ss_: () => ({ getSpreadsheetTimeZone: () => 'America/Los_Angeles' }),
+        readAll: () => rows,
+        updateRow: (tab, row, value) => { events.push(['update', tab, row, value]); },
+        appendRow: () => { throw new Error('duplicate KPI row'); }
+      }
+    },
+    names: ['Report']
+  }).Report;
+  Report.writeKpiRow_({ sourced: 2, scored: 2, queued: 1, approved: 1, submitted: 0, sent: 0, responses: 0, interviews: 0 });
+  assert.deepEqual(events[0], ['weekly-kpi', 5000]);
+  assert.equal(events[1][0], 'update');
+  assert.equal(events[1][2], 2);
+});

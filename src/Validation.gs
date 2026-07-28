@@ -7,7 +7,7 @@
 const Validation = {
   safeHttpsUrl(value) {
     if (typeof value !== 'string') return '';
-    if (!value || value.length > 4096 || /[\s\u0000-\u001f\u007f\\]/.test(value)) return '';
+    if (!value || value.length > 4096 || /[\s\u0000-\u001f\u007f-\u009f\\]/.test(value)) return '';
 
     const schemeEnd = value.indexOf('://');
     if (schemeEnd <= 0 || value.slice(0, schemeEnd).toLowerCase() !== 'https') return '';
@@ -96,7 +96,7 @@ const Validation = {
       if (close < 2) return '';
       host = authority.slice(0, close + 1);
       const address = host.slice(1, -1);
-      if (!/^[0-9A-Fa-f:.]+$/.test(address) || address.indexOf(':') === -1) return '';
+      if (!this.validIpv6_(address)) return '';
       if (authority.length > close + 1) {
         if (authority.charAt(close + 1) !== ':') return '';
         port = authority.slice(close + 2);
@@ -130,6 +130,31 @@ const Validation = {
           !/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(labels[i])) return false;
     }
     return true;
+  },
+
+  validIpv6_(address) {
+    if (!address || address.indexOf(':::') !== -1) return false;
+    const compression = address.indexOf('::');
+    if (compression !== -1 && compression !== address.lastIndexOf('::')) return false;
+
+    const validGroups = function (side) {
+      if (!side) return [];
+      const groups = side.split(':');
+      for (let i = 0; i < groups.length; i++) {
+        if (!/^[0-9A-Fa-f]{1,4}$/.test(groups[i])) return null;
+      }
+      return groups;
+    };
+
+    if (compression === -1) {
+      const groups = validGroups(address);
+      return groups !== null && groups.length === 8;
+    }
+
+    const left = validGroups(address.slice(0, compression));
+    const right = validGroups(address.slice(compression + 2));
+    if (left === null || right === null) return false;
+    return left.length + right.length < 8;
   },
 
   normaliseSuffix_(suffix) {

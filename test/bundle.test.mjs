@@ -109,7 +109,7 @@ function forbiddenReleaseHits(contents = releaseContents()) {
   const maintainerName = ['Enzo', 'Snyman'].join(' ');
   const privateNames = [privateName, ['Gabi', 'sile'].join(''), ['Nt', 'lama'].join(''),
     ['Incep', 'tum'].join(''), ['lebo', 'snyman3'].join('')];
-  const liveEmail = /[A-Z0-9._%+-]+@(?!(?:[A-Z0-9-]+\.)*example\.(?:test|com|org)(?:$|[\s'"<>,]))[A-Z][A-Z0-9-]*(?:\.[A-Z][A-Z0-9-]*)+\.[A-Z]{2,}/ig;
+  const liveEmail = /[A-Z0-9._%+-]+@(?!(?:[A-Z0-9-]+\.)*example\.(?:test|com|org)\b)[A-Z][A-Z0-9-]*(?:\.[A-Z][A-Z0-9-]*)*\.[A-Z]{2,}/ig;
   const personalLinkedIn = /linkedin\.com\/in\/(?!your-handle(?:[/?#\s'".,)]|$))[A-Z0-9._-]+/ig;
   const apiKey = /(?:AIza[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z]{20,}|(?:api[_ -]?key|app[_ -]?key)["']?\s*[:=]\s*["']?(?!your[-_]|example|<)[A-Za-z0-9_-]{24,})/ig;
   const hits = [];

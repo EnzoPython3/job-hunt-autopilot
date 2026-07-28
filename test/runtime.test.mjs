@@ -467,6 +467,27 @@ test('Outreach validates contact email, reuses stored drafts, and remains draft-
   assert.equal(updates.length, 0);
 });
 
+test('Outreach reuses a deterministic application draft when the CRM draft ID was not persisted', () => {
+  let creates = 0;
+  const { Outreach } = loadGs(resolve(ROOT, 'src/Outreach.gs'), {
+    globals: {
+      Config: { promptCandidate: () => ({ name: 'A' }) },
+      Validation: { isEmail: () => true },
+      Prompts: { render: () => 'prompt' },
+      Gemini: { generate: () => { throw new Error('must not regenerate'); } },
+      Crm: { TABS: { OPPORTUNITIES: 'Opportunities' }, updateRow: () => { throw new Error('must not write'); } },
+      GmailApp: {
+        getDraft: () => null,
+        getDrafts: () => [{ getMessage: () => ({ getSubject: () => '[JHA:opp-8:application] Application' }), getId: () => 'existing-draft' }],
+        createDraft: () => { creates++; return { getId: () => 'new-draft' }; }
+      }
+    },
+    names: ['Outreach']
+  });
+  assert.equal(Outreach.draftFor({ id: 'opp-8', contact_email: 'person@example.test', role: 'Support' }, {}), 'existing-draft');
+  assert.equal(creates, 0);
+});
+
 test('Outreach writes follow-up markers only after draft creation and reuses the marker on retry', () => {
   const updates = [];
   let creates = 0;
@@ -508,6 +529,27 @@ test('InterviewPrep reuses the stored interview operation marker', () => {
   const result = InterviewPrep.generateFor({ id: 'opp-6', notes: '[interview:opp-6:interview:doc-6:https://drive.test/doc-6]' });
   assert.equal(result.docId, 'doc-6');
   assert.equal(result.docUrl, 'https://drive.test/doc-6');
+  assert.equal(creates, 0);
+});
+
+test('prepInterviews skips legacy prepped markers instead of generating a second document', () => {
+  let creates = 0;
+  const { prepInterviews } = loadGs(resolve(ROOT, 'src/Loop.gs'), {
+    globals: {
+      Crm: {
+        TABS: { OPPORTUNITIES: 'Opportunities' },
+        ensureSchema: () => {},
+        readAll: () => [{ _row: 2, id: 'opp-9', status: 'interview', notes: '[prepped] https://drive.test/old' }]
+      },
+      Config: { tunable: () => 1 },
+      Runtime: { withScriptLock: (_name, _wait, fn) => fn(), boundedBatch: (value) => value, deadlineMs: () => Date.now() + 10000, shouldStop: () => false, failure: () => ({}) },
+      InterviewPrep: { generateFor: () => { creates++; throw new Error('must not generate'); } },
+      Logger: { log: () => {} },
+      Alerts: { notify: () => {} }
+    },
+    names: ['prepInterviews']
+  });
+  assert.equal(prepInterviews(), 0);
   assert.equal(creates, 0);
 });
 

@@ -390,3 +390,146 @@ test('Crm upsertApproval reuses the stable opportunity row and verifies persiste
   assert.equal(appRow.decision, 'Approve');
   assert.equal(appRow.edited_notes, 'Keep this human note');
 });
+
+test('Tailor reuses a stored CV and cover artefact without calling Gemini or creating files', () => {
+  const updates = [];
+  let geminiCalls = 0;
+  let copyCalls = 0;
+  const files = {
+    'cv-existing': { getId: () => 'cv-existing', getUrl: () => 'https://drive.test/cv-existing' },
+    'cover-existing': { getId: () => 'cover-existing', getUrl: () => 'https://drive.test/cover-existing' }
+  };
+  const { Tailor } = loadGs(resolve(ROOT, 'src/Tailor.gs'), {
+    globals: {
+      Config: { KEYS: { MASTER_CV_DOC_ID: 'MASTER_CV_DOC_ID' }, require: () => 'config', promptCandidate: () => ({ firstName: 'A', name: 'A' }) },
+      Gemini: { generate: () => { geminiCalls++; throw new Error('must not regenerate'); } },
+      Crm: { updateRow: (...args) => updates.push(args) },
+      DriveApp: {
+        getFileById: (id) => files[id] || (() => { copyCalls++; throw new Error('unexpected file lookup'); })()
+      }
+    },
+    names: ['Tailor']
+  });
+  const opp = { _row: 2, id: 'opp-1', company: 'Example', role: 'Support', cv_file_id: 'cv-existing', cover_file_id: 'cover-existing' };
+  assert.equal(Tailor.operationKey_(opp, 'cv'), 'opp-1:cv');
+  assert.equal(Tailor.operationKey_(opp, 'cover'), 'opp-1:cover');
+  assert.equal(Tailor.tailorCv(opp).pdfId, 'cv-existing');
+  assert.equal(Tailor.coverLetter(opp).pdfId, 'cover-existing');
+  assert.equal(geminiCalls, 0);
+  assert.equal(copyCalls, 0);
+  assert.equal(updates.length, 0);
+});
+
+test('Tailor persists a CV ID immediately so a later failure cannot create a second CV', () => {
+  const updates = [];
+  const copy = { getId: () => 'cv-doc', getUrl: () => 'https://drive.test/cv-doc' };
+  const pdf = { getId: () => 'cv-pdf', getUrl: () => 'https://drive.test/cv-pdf' };
+  const { Tailor } = loadGs(resolve(ROOT, 'src/Tailor.gs'), {
+    globals: {
+      Config: { KEYS: { MASTER_CV_DOC_ID: 'MASTER_CV_DOC_ID', DRIVE_FOLDER_ID: 'DRIVE_FOLDER_ID' }, require: (key) => key === 'MASTER_CV_DOC_ID' ? 'master' : 'folder', promptCandidate: () => ({ firstName: 'A', name: 'A' }) },
+      Gemini: { generate: () => 'summary' },
+      Prompts: { render: () => 'prompt' },
+      Crm: { updateRow: (...args) => updates.push(args) },
+      DriveApp: {
+        getFileById: (id) => id === 'master' ? { makeCopy: () => copy } : ({ getAs: () => ({}) }),
+      },
+      DocumentApp: { openById: () => ({ getBody: () => ({ replaceText: () => {} }), saveAndClose: () => {} }) },
+      folder: null
+    },
+    names: ['Tailor']
+  });
+  Tailor.folderForOpp_ = () => ({ createFile: () => ({ ...pdf, setName: () => pdf }) });
+  const result = Tailor.tailorCv({ _row: 4, id: 'opp-2', company: 'Example', role: 'Support' });
+  assert.equal(result.pdfId, 'cv-pdf');
+  assert.equal(updates.some((entry) => entry[2].cv_file_id === 'cv-pdf'), true);
+});
+
+test('Outreach validates contact email, reuses stored drafts, and remains draft-only', () => {
+  let createCalls = 0;
+  const updates = [];
+  const { Outreach } = loadGs(resolve(ROOT, 'src/Outreach.gs'), {
+    globals: {
+      Config: { promptCandidate: () => ({ name: 'A' }) },
+      Validation: { isEmail: (value) => value === 'person@example.test' },
+      Prompts: { render: () => 'prompt' },
+      Gemini: { generate: () => 'body' },
+      Crm: { updateRow: (...args) => updates.push(args) },
+      GmailApp: {
+        getDraft: (id) => ({ getId: () => id }),
+        createDraft: () => { createCalls++; return { getId: () => 'new-draft' }; }
+      }
+    },
+    names: ['Outreach']
+  });
+  assert.equal(Outreach.draftFor({ id: 'opp-3', contact_email: 'person@example.test', draft_id: 'old-draft', role: 'Support' }, {}), 'old-draft');
+  assert.throws(() => Outreach.draftFor({ id: 'opp-4', contact_email: 'bad address', role: 'Support' }, {}), /email/i);
+  assert.equal(createCalls, 0);
+  assert.equal(updates.length, 0);
+});
+
+test('Outreach writes follow-up markers only after draft creation and reuses the marker on retry', () => {
+  const updates = [];
+  let creates = 0;
+  const row = { _row: 8, id: 'opp-5', contact_email: 'person@example.test', role: 'Support', notes: '' };
+  const { Outreach } = loadGs(resolve(ROOT, 'src/Outreach.gs'), {
+    globals: {
+      Config: { promptCandidate: () => ({ name: 'A' }) },
+      Validation: { isEmail: () => true },
+      Prompts: { render: () => 'prompt' },
+      Gemini: { generate: () => 'body' },
+      Crm: { TABS: { OPPORTUNITIES: 'Opportunities' }, updateRow: (_tab, _row, values) => { Object.assign(row, values); updates.push(values); } },
+      GmailApp: {
+        getDraft: () => null,
+        getDrafts: () => [],
+        createDraft: () => { creates++; return { getId: () => 'followup-draft' }; }
+      }
+    },
+    names: ['Outreach']
+  });
+  assert.equal(Outreach.draftFollowUp(row, 'a few days'), 'followup-draft');
+  assert.match(row.notes, /\[fu3\]/);
+  assert.equal(Outreach.draftFollowUp(row, 'a few days'), null);
+  assert.equal(creates, 1);
+  assert.equal(updates.length, 1);
+});
+
+test('InterviewPrep reuses the stored interview operation marker', () => {
+  let creates = 0;
+  const { InterviewPrep } = loadGs(resolve(ROOT, 'src/InterviewPrep.gs'), {
+    globals: {
+      Tailor: { folderForOpp_: () => ({}), safe_: (value) => value },
+      Config: { promptCandidate: () => ({ firstName: 'A' }) },
+      Prompts: { render: () => 'prompt' },
+      Gemini: { generate: () => { throw new Error('must not regenerate'); } },
+      DocumentApp: { create: () => { creates++; throw new Error('must not create'); } }
+    },
+    names: ['InterviewPrep']
+  });
+  const result = InterviewPrep.generateFor({ id: 'opp-6', notes: '[interview:opp-6:interview:doc-6:https://drive.test/doc-6]' });
+  assert.equal(result.docId, 'doc-6');
+  assert.equal(result.docUrl, 'https://drive.test/doc-6');
+  assert.equal(creates, 0);
+});
+
+test('Loop trigger workers enforce a deadline, cap work, and alert one aggregate failure', () => {
+  const alerts = [];
+  const failures = [];
+  const Loop = loadGs(resolve(ROOT, 'src/Loop.gs'), {
+    globals: {
+      Crm: {
+        TABS: { OPPORTUNITIES: 'Opportunities' },
+        ensureSchema: () => {},
+        readAll: () => [{ _row: 2, id: 'opp-7', status: 'sent', contact_email: 'person@example.test', response: '', applied_date: new Date(Date.now() - 4 * 86400000), notes: '' }],
+      },
+      Config: { tunable: () => 1, defaults: { FOLLOWUP_DAYS: [3, 7] } },
+      Runtime: { withScriptLock: (_name, _wait, fn) => fn(), deadlineMs: () => 0, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error) }) },
+      Outreach: { draftFollowUp: () => { throw new Error('follow-up failed'); } },
+      Alerts: { notify: (...args) => alerts.push(args) },
+      Logger: { log: () => {} }
+    },
+    names: ['followUps']
+  }).followUps;
+  assert.throws(() => Loop(), /follow-up failed/);
+  assert.equal(alerts.length, 1);
+  assert.match(String(alerts[0][1]), /follow-up failed/);
+});

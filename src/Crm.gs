@@ -165,24 +165,28 @@ const Crm = {
       const active = String(row.processing_state || '') === 'working' && started > 0 &&
         now.getTime() - started < leaseMs;
       if (active) return false;
+      const claimToken = (typeof Utilities !== 'undefined' && Utilities.getUuid)
+        ? Utilities.getUuid()
+        : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
       self.updateRow(tab, row._row, {
         processing_state: 'working',
-        processing_key: key,
+        processing_key: claimToken,
         processing_started_at: now,
         failure_message: ''
       });
-      return true;
+      return claimToken;
     });
   },
 
-  releaseClaim(tab, stableId, failureMessage) {
+  releaseClaim(tab, stableId, claimToken, failureMessage) {
     const key = String(stableId || '').trim();
-    if (!key) return false;
+    const token = String(claimToken || '').trim();
+    if (!key || !token) return false;
     const runtime = this.Runtime || Runtime;
     const self = this;
     return runtime.withScriptLock('crm-release:' + tab, 5000, function () {
       const row = self.readAll(tab).filter(function (candidate) {
-        return String(candidate.id || '') === key && String(candidate.processing_key || '') === key;
+        return String(candidate.id || '') === key && String(candidate.processing_key || '') === token;
       })[0];
       if (!row) return false;
       self.updateRow(tab, row._row, {

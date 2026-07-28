@@ -56,8 +56,11 @@ const Match = {
     let scored = 0, queued = 0;
     pending.forEach(function (opp) {
       let claimed = false;
+      let claimToken = '';
       try {
-        claimed = Crm.claim ? Crm.claim(Crm.TABS.OPPORTUNITIES, opp.id) : true;
+        const claimResult = Crm.claim ? Crm.claim(Crm.TABS.OPPORTUNITIES, opp.id) : true;
+        claimed = claimResult !== false;
+        claimToken = typeof claimResult === 'string' ? claimResult : '';
         if (!claimed) return;
         const r = self.scoreOne(opp);
         const pass = Number(r.fit_score) >= threshold;
@@ -89,7 +92,7 @@ const Match = {
         }
       } finally {
         if (claimed && Crm.releaseClaim) {
-          try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, opp.id); } catch (releaseError) {
+          try { Crm.releaseClaim(Crm.TABS.OPPORTUNITIES, opp.id, claimToken); } catch (releaseError) {
             Logger.log('release score claim ' + opp.id + ': ' + releaseError);
           }
         }

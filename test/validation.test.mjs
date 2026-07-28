@@ -187,3 +187,22 @@ test('validateGeminiTextResponse rejects malformed envelopes and unexpected type
     );
   }
 });
+
+test('safeHttpsUrl accepts only HTTPS job links without credentials', () => {
+  assert.equal(Validation.safeHttpsUrl('https://jobs.example.test/apply?id=1'), 'https://jobs.example.test/apply?id=1');
+  for (const value of [
+    'http://jobs.example.test/apply',
+    'javascript:alert(1)',
+    'data:text/html,hello',
+    'https://user:pass@jobs.example.test/apply',
+    'https://jobs.example.test:bad/apply',
+    'https://[bad/apply'
+  ]) {
+    assert.equal(Validation.safeHttpsUrl(value), '', `expected rejection for ${value}`);
+  }
+});
+
+test('safeHttpsUrl resolves only HTTPS redirect targets', () => {
+  assert.equal(Validation.safeHttpsUrl('https://jobs.example.test/next'), 'https://jobs.example.test/next');
+  assert.equal(Validation.safeHttpsUrl('http://jobs.example.test/next'), '');
+});

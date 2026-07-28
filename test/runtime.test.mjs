@@ -664,6 +664,31 @@ test('agency outreach does not claim a contact without a stable contact ID', () 
   assert.equal(events.some((event) => event[0] === 'claim'), false);
 });
 
+test('agency outreach persists a bounded retryable contact failure before aggregation', () => {
+  const updates = [];
+  const { Outreach } = loadGs(resolve(ROOT, 'src/Outreach.gs'), {
+    globals: {
+      Config: { tunable: () => 1, promptCandidate: () => ({ name: 'A' }) },
+      Validation: { isEmail: () => true }, Prompts: { render: () => 'prompt' }, Gemini: { generate: () => 'body' },
+      Crm: {
+        TABS: { CONTACTS: 'Contacts' },
+        readAll: () => [{ _row: 2, id: 'contact-fail', type: 'agency', email: 'agency@example.test', name: 'Agency' }],
+        claim: () => 'token', releaseClaim: () => {},
+        updateRow: (tab, row, values) => updates.push([tab, row, values])
+      },
+      Runtime: { boundedBatch: (value) => value, shouldStop: () => false, failure: (name, error) => ({ name, message: String(error.message || error) }) },
+      GmailApp: { getDraft: () => null, getDrafts: () => [], createDraft: () => { throw new Error('provider response ' + 'x'.repeat(500)); } }
+    }, names: ['Outreach']
+  });
+  const result = Outreach.draftAgencyOutreach(1, Date.now() + 10000);
+  assert.equal(result.created, 0);
+  assert.equal(result.failures.length, 1);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0][1], 2);
+  assert.match(updates[0][2].failure_message, /provider response/);
+  assert.ok(updates[0][2].failure_message.length <= 240);
+});
+
 test('Alerts sanitises secrets, URLs, and oversized response bodies without recursing on delivery failure', () => {
   const sent = [];
   const logs = [];
@@ -684,6 +709,26 @@ test('Alerts sanitises secrets, URLs, and oversized response bodies without recu
   assert.equal(logs.length, 1);
   assert.equal(logs[0].includes('secret'), false);
   assert.equal(logs[0].includes('https://mail.example.test'), false);
+});
+
+test('Alerts redacts configured secret values even in bare exceptions and key fields', () => {
+  const sent = [];
+  const Config = {
+    KEYS: { GEMINI_API_KEY: 'GEMINI_API_KEY', RAPIDAPI_KEY: 'RAPIDAPI_KEY' },
+    get: (key) => ({ GEMINI_API_KEY: 'gemini-config-secret', RAPIDAPI_KEY: 'rapid-config-secret' }[key] || null),
+    defaults: { ALERT_EMAIL: 'alerts@example.test' }
+  };
+  const Alerts = loadGs(resolve(ROOT, 'src/Alerts.gs'), {
+    globals: {
+      Config,
+      PropertiesService: { getScriptProperties: () => ({ getProperties: () => ({ ADZUNA_APP_KEY: 'adzuna-property-secret' }) }) },
+      MailApp: { sendEmail: (message) => sent.push(message) }, Logger: { log: () => {} }
+    }, names: ['Alerts']
+  }).Alerts;
+  Alerts.notify('scoreQueue', new Error('gemini-config-secret'));
+  assert.equal(sent[0].body.includes('gemini-config-secret'), false);
+  assert.equal(sent[0].body.includes('rapid-config-secret'), false);
+  assert.equal(sent[0].body.includes('adzuna-property-secret'), false);
 });
 
 test('dailySource uses the shared lock and alerts before rethrowing trigger failures', () => {

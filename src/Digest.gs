@@ -7,6 +7,18 @@
  */
 function morningDigest() {
   try {
+    const run = function () { return morningDigest_(); };
+    return (typeof Runtime !== 'undefined' && Runtime.withScriptLock)
+      ? Runtime.withScriptLock('morningDigest', 5000, run)
+      : run();
+  } catch (e) {
+    Logger.log('morningDigest: FAILED');
+    Alerts.notify('morningDigest', e);
+    throw e;
+  }
+}
+
+function morningDigest_() {
     Crm.ensureSchema();
 
     const pending = Crm.readAll(Crm.TABS.APPROVALS).filter(function (a) {
@@ -21,15 +33,17 @@ function morningDigest() {
 
     const cand = Config.candidate();
     const sheetUrl = SpreadsheetApp.openById(Config.require(Config.KEYS.SHEET_ID)).getUrl();
+    const sheetHref = Validation.safeHref(sheetUrl);
     const noun = pending.length === 1 ? 'role' : 'roles';
 
     const rows = pending.map(function (a) {
+      const href = a.url ? Validation.safeHref(a.url) : '';
       return '<tr>' +
         '<td style="padding:6px 10px;border-bottom:1px solid #eee;"><b>' + htmlEscape_(a.fit_score) + '</b></td>' +
         '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.role) + '</td>' +
         '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.company) + '</td>' +
         '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + htmlEscape_(a.track) + '</td>' +
-        '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + (a.url ? '<a href="' + htmlEscape_(a.url) + '">view</a>' : '') + '</td>' +
+        '<td style="padding:6px 10px;border-bottom:1px solid #eee;">' + (href ? '<a href="' + href + '">view</a>' : '') + '</td>' +
         '</tr>';
     }).join('');
 
@@ -44,7 +58,7 @@ function morningDigest() {
       '<th align="left" style="padding:6px 10px;border-bottom:2px solid #ccc;">Track</th>' +
       '<th style="border-bottom:2px solid #ccc;"></th>' +
       '</tr>' + rows + '</table>' +
-      '<p style="margin:16px 0;"><a href="' + htmlEscape_(sheetUrl) + '" style="background:#6b6b6b;color:#fff;padding:9px 16px;border-radius:4px;text-decoration:none;">Open the Approvals sheet</a></p>' +
+      '<p style="margin:16px 0;">' + (sheetHref ? '<a href="' + sheetHref + '" style="background:#6b6b6b;color:#fff;padding:9px 16px;border-radius:4px;text-decoration:none;">Open the Approvals sheet</a>' : 'Open the Approvals sheet from Google Sheets.') + '</p>' +
       '<p style="font-size:12px;color:#888;">Type "Approve" in the decision column for the ones you want. Tailored CVs, cover letters and email drafts are then prepared automatically.</p>' +
       '</div>';
 
@@ -60,13 +74,6 @@ function morningDigest() {
       name: 'Job-Hunt Autopilot'
     });
     Logger.log('morningDigest: sent ' + pending.length + ' item(s) to ' + cand.email);
-  } catch (e) {
-    // Almost always a missing send_mail authorisation - re-run the project
-    // once from the editor and grant permissions, then re-install triggers.
-    Logger.log('morningDigest: FAILED: ' + e);
-    Alerts.notify('morningDigest', e);
-    throw e;
-  }
 }
 
 function htmlEscape_(s) {

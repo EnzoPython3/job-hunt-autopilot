@@ -7,17 +7,27 @@
  * dropped; JSearch and ATS return direct links, so they are trusted for speed.
  */
 const Sources = {
+  lastFailureReport_: [],
+  MAX_RESPONSE_CHARS_: 200000,
+
   ingest(cap) {
     cap = cap || Config.tunable('DAILY_SOURCE_CAP');
     const self = this;
     const t0 = Date.now();
+    const deadline = (typeof Runtime !== 'undefined' && Runtime.deadlineMs)
+      ? Runtime.deadlineMs(300000) : t0 + 300000;
     const found = [];
-    try { Array.prototype.push.apply(found, this.fromJSearch_()); } catch (e) { Logger.log('JSearch: ' + e); }
-    try { Array.prototype.push.apply(found, this.fromAdzuna()); } catch (e) { Logger.log('Adzuna: ' + e); }
+    const failures = [];
+    this.lastFailureReport_ = failures;
+    this.failureContext_ = failures;
+    try { Array.prototype.push.apply(found, this.fromJSearch_(deadline)); } catch (e) { this.recordFailure_(failures, 'JSearch'); }
+    try { Array.prototype.push.apply(found, this.fromAdzuna(deadline)); } catch (e) { this.recordFailure_(failures, 'Adzuna'); }
     Config.atsBoards().forEach(function (b) {
-      try { Array.prototype.push.apply(found, self.fromAts(b)); }
-      catch (e) { Logger.log('ATS ' + b.type + '/' + b.slug + ': ' + e); }
+      if (self.shouldStop_(deadline)) return;
+      try { Array.prototype.push.apply(found, self.fromAts(b, deadline)); }
+      catch (e) { self.recordFailure_(failures, 'ATS ' + b.type); }
     });
+    this.failureContext_ = null;
 
     // Read existing ids ONCE. Calling Crm.existsOpportunity per job re-read the
     // whole sheet each time (quadratic, and worse as the sheet grows) - that plus
@@ -25,7 +35,6 @@ const Sources = {
     const seen = {};
     Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) { if (o.id) seen[o.id] = true; });
 
-    const deadline = t0 + 5 * 60 * 1000;   // stop before Apps Script's 6-min hard kill
     let added = 0, dead = 0, excluded = 0, offloc = 0, stopped = false;
     for (let i = 0; i < found.length && added < cap; i++) {
       if (Date.now() > deadline) { stopped = true; break; }
@@ -42,7 +51,8 @@ const Sources = {
       // posting under rotating redirect wrappers, so hashing the wrapper duplicated
       // rows. JSearch/ATS already return direct links.
       if (/^adzuna/.test(job.source)) {
-        const r = self.resolveUrl_(job.url);
+        const r = self.resolveUrl_(job.url, 4, deadline);
+        if (r.stopped) { stopped = true; break; }
         if (!r.alive) { dead++; continue; }
         job.url = r.url;
         job.id = self.hashId_(job.source, job.company, job.role, job.url);
@@ -56,13 +66,24 @@ const Sources = {
       // "email application" (tailored CV + Gmail draft) rather than a portal role.
       if (!job.contact_email && job.descr) job.contact_email = Outreach.harvestEmail_(job.descr);
 
-      Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
-        id: job.id, source: job.source, company: job.company, role: job.role,
-        location: job.location, mode: job.mode, url: job.url, contact_email: job.contact_email || '',
-        posted_date: job.posted_date || '', status: 'sourced',
-        created_at: new Date(), updated_at: new Date()
-      });
-      added++;
+      const appended = (typeof Runtime !== 'undefined' && Runtime.withScriptLock)
+        ? Runtime.withScriptLock('sources-ingest-append', 5000, function () {
+            if (Crm.findOpportunity && Crm.findOpportunity(job.id)) return false;
+            Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
+              id: job.id, source: job.source, company: job.company, role: job.role,
+              location: job.location, mode: job.mode, url: job.url, contact_email: job.contact_email || '',
+              posted_date: job.posted_date || '', status: 'sourced',
+              created_at: new Date(), updated_at: new Date()
+            });
+            return true;
+          })
+        : (Crm.appendRow(Crm.TABS.OPPORTUNITIES, {
+            id: job.id, source: job.source, company: job.company, role: job.role,
+            location: job.location, mode: job.mode, url: job.url, contact_email: job.contact_email || '',
+            posted_date: job.posted_date || '', status: 'sourced',
+            created_at: new Date(), updated_at: new Date()
+          }), true);
+      if (appended) added++;
     }
     const skips = [];
     if (dead) skips.push(dead + ' dead-link');
@@ -70,7 +91,24 @@ const Sources = {
     if (offloc) skips.push(offloc + ' out-of-location');
     if (skips.length) Logger.log('ingest: skipped ' + skips.join(', ') + '.');
     if (stopped) Logger.log('ingest: stopped at time budget; next run continues with what is still fresh.');
+    if (failures.length) {
+      Logger.log('ingest: ' + failures.length + ' source failure(s); retry is required.');
+      throw new Error('Source ingest failed: ' + failures.length + ' source failure(s)');
+    }
     return added;
+  },
+
+  recordFailure_(failures, label) {
+    failures = failures || this.failureContext_ || this.lastFailureReport_;
+    if (failures.length >= 20) return;
+    const entry = String(label) + ': source request failed';
+    failures.push(entry);
+    this.lastFailureReport_ = failures;
+  },
+
+  shouldStop_(deadline) {
+    return deadline !== undefined && deadline !== null &&
+      ((typeof Runtime !== 'undefined' && Runtime.shouldStop) ? Runtime.shouldStop(deadline) : Date.now() >= deadline);
   },
 
   // Phrases boards print on a closed posting (many answer HTTP 200 for these).
@@ -85,15 +123,17 @@ const Sources = {
    * Fails open only after at least one hop resolved; an error on the very first
    * request marks the link dead (the job simply re-ingests on a later run).
    */
-  resolveUrl_(url, maxHops) {
+  resolveUrl_(url, maxHops, deadline) {
+    url = Validation.safeHttpsUrl(url);
     if (!url) return { url: url, alive: false };
     maxHops = maxHops || 4;
     let cur = url;
     let hops = 0;
     try {
       for (let h = 0; h < maxHops; h++) {
+        if (this.shouldStop_(deadline)) return { url: cur, alive: false, stopped: true };
         const res = UrlFetchApp.fetch(cur, {
-          followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: false
+          followRedirects: false, muteHttpExceptions: true, validateHttpsCertificates: true
         });
         const code = res.getResponseCode();
         if (code >= 300 && code < 400) {
@@ -101,7 +141,8 @@ const Sources = {
           let loc = hdr['Location'] || hdr['location'];
           if (Array.isArray(loc)) loc = loc[0];
           if (!loc) return { url: cur, alive: true };
-          cur = this.absoluteUrl_(cur, loc);
+          cur = Validation.safeHttpsUrl(this.absoluteUrl_(cur, loc));
+          if (!cur) return { url: '', alive: false };
           hops++;
           continue;
         }
@@ -111,7 +152,8 @@ const Sources = {
         if (this.EXPIRED_RE.test(body)) return { url: cur, alive: false };
         const meta = body.match(/http-equiv=["']?refresh["']?[^>]*url\s*=\s*["']?([^"'>\s]+)/i);
         if (meta && meta[1] && h < maxHops - 1) {
-          cur = this.absoluteUrl_(cur, meta[1]);
+          cur = Validation.safeHttpsUrl(this.absoluteUrl_(cur, meta[1]));
+          if (!cur) return { url: '', alive: false };
           hops++;
           continue;
         }
@@ -119,7 +161,7 @@ const Sources = {
       }
       return { url: cur, alive: true };              // too many hops; treat as alive
     } catch (e) {
-      Logger.log('resolveUrl_ (' + url + '): ' + e);
+      Logger.log('resolveUrl_: request failed');
       return { url: cur, alive: hops > 0 };          // hop-0 failure = source link unreachable
     }
   },
@@ -182,21 +224,8 @@ const Sources = {
    * page as dead. Fails open (returns true) on network/timeout errors so a
    * transient blip does not silently drop a good job.
    */
-  linkAlive_(url) {
-    if (!url) return false;
-    try {
-      const res = UrlFetchApp.fetch(url, {
-        followRedirects: true, muteHttpExceptions: true, validateHttpsCertificates: false
-      });
-      const code = res.getResponseCode();
-      if (code >= 400) return false;
-      const body = res.getContentText().slice(0, 4000);
-      if (this.EXPIRED_RE.test(body)) return false;
-      return true;
-    } catch (e) {
-      Logger.log('linkAlive_ (' + url + '): ' + e);
-      return true;
-    }
+  linkAlive_(url, deadline) {
+    return this.resolveUrl_(url, 4, deadline).alive;
   },
 
   hashId_(source, company, role, url) {
@@ -206,13 +235,20 @@ const Sources = {
     return source.split(':')[0] + '_' + hex.slice(0, 16);
   },
 
-  getJson_(url) {
-    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  getJson_(url, deadline) {
+    if (this.shouldStop_(deadline)) throw new Error('source deadline reached');
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
     if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode());
-    return JSON.parse(res.getContentText());
+    return JSON.parse(this.responseBody_(res));
   },
 
-  fromAdzuna() {
+  responseBody_(res) {
+    const body = String(res.getContentText() || '');
+    if (body.length > this.MAX_RESPONSE_CHARS_) throw new Error('source response too large');
+    return body;
+  },
+
+  fromAdzuna(deadline) {
     const appId = Config.get(Config.KEYS.ADZUNA_APP_ID);
     const appKey = Config.get(Config.KEYS.ADZUNA_APP_KEY) || Config.get('ADZUNA_API_KEY');
     if (!appId || !appKey) { Logger.log('Adzuna keys not set; skipping.'); return []; }
@@ -220,6 +256,7 @@ const Sources = {
     const out = [];
     Config.adzunaCountries().forEach(function (country) {
       Config.adzunaQueries().forEach(function (what) {
+        if (self.shouldStop_(deadline)) return;
         const url = 'https://api.adzuna.com/v1/api/jobs/' + country + '/search/1' +
           '?app_id=' + encodeURIComponent(appId) +
           '&app_key=' + encodeURIComponent(appKey) +
@@ -228,22 +265,29 @@ const Sources = {
           '&sort_by=date' +          // newest first, so redirects are less likely expired
           '&max_days_old=10' +       // tighter window - stale postings 404 on click
           '&content-type=application/json';
-        const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-        if (res.getResponseCode() !== 200) { Logger.log('Adzuna ' + country + '/' + what + ' HTTP ' + res.getResponseCode()); return; }
-        const data = JSON.parse(res.getContentText());
-        (data.results || []).forEach(function (r) {
-          const company = (r.company && r.company.display_name) || 'Unknown';
-          const role = r.title || '';
-          const jurl = r.redirect_url || '';
-          const hay = (role + ' ' + (r.description || '')).toLowerCase();
-          out.push({
-            id: self.hashId_('adzuna:' + country, company, role, jurl),
-            source: 'adzuna:' + country, company: company, role: role,
-            location: (r.location && r.location.display_name) || '',
-            mode: /remote|work from home|wfh/.test(hay) ? 'remote' : '',
-            url: jurl, posted_date: r.created || '', descr: r.description || ''
+        const label = 'Adzuna ' + country + '/' + what;
+        try {
+          const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
+          if (res.getResponseCode() !== 200) { self.recordFailure_(null, label); return; }
+          const data = JSON.parse(self.responseBody_(res));
+          if (!data || !Array.isArray(data.results)) return;
+          data.results.forEach(function (r) {
+            if (!r || typeof r !== 'object') return;
+            const company = (r.company && r.company.display_name) || 'Unknown';
+            const role = r.title || '';
+            const jurl = r.redirect_url || '';
+            const valid = self.job_(
+              'adzuna:' + country, company, role, jurl,
+              (r.location && r.location.display_name) || '',
+              /remote|work from home|wfh/.test((role + ' ' + (r.description || '')).toLowerCase()),
+              r.created || '', r.description || ''
+            );
+            if (!valid) return;
+            const hay = (role + ' ' + (r.description || '')).toLowerCase();
+            valid.mode = /remote|work from home|wfh/.test(hay) ? 'remote' : '';
+            out.push(valid);
           });
-        });
+        } catch (e) { self.recordFailure_(null, label); }
       });
     });
     return out;
@@ -254,45 +298,43 @@ const Sources = {
    * Indeed, LinkedIn, Glassdoor and SA boards (incl. PNet-sourced listings).
    * Returns DIRECT apply links (job_apply_link), so links are live by design.
    */
-  fromJSearch_() {
+  fromJSearch_(deadline) {
     const key = Config.get(Config.KEYS.RAPIDAPI_KEY);
     if (!key) { Logger.log('JSearch key (RAPIDAPI_KEY) not set; skipping.'); return []; }
     const self = this;
     const out = [];
     const datePosted = Config.jsearchDatePosted();
     Config.jsearchQueries().forEach(function (what) {
+      if (self.shouldStop_(deadline)) return;
       // JSearch's /search was retired in favour of /search-v2 (cursor pagination -
       // no page/num_pages). Omitting the cursor returns the first page, which is all we need.
       const url = 'https://jsearch.p.rapidapi.com/search-v2' +
         '?query=' + encodeURIComponent(what + ' in South Africa') +
         '&country=za' +
         '&date_posted=' + encodeURIComponent(datePosted);
-      const res = UrlFetchApp.fetch(url, {
-        method: 'get',
-        muteHttpExceptions: true,
-        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' }
-      });
-      if (res.getResponseCode() !== 200) {
-        Logger.log('JSearch "' + what + '" HTTP ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 200));
-        return;
-      }
-      const data = JSON.parse(res.getContentText());
-      self.pickJobs_(data).forEach(function (j) {
-        const company = j.employer_name || 'Unknown';
-        const role = j.job_title || '';
-        const jurl = j.job_apply_link || '';
-        if (!jurl) return;
-        const publisher = j.job_publisher || 'jsearch';
-        const loc = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || (j.job_location || '');
-        out.push({
-          id: self.hashId_('jsearch:' + publisher, company, role, jurl),
-          source: 'jsearch:' + publisher, company: company, role: role,
-          location: loc,
-          mode: j.job_is_remote ? 'remote' : '',
-          url: jurl, posted_date: j.job_posted_at_datetime_utc || '',
-          descr: j.job_description || ''
+      const label = 'JSearch ' + what;
+      try {
+        const res = UrlFetchApp.fetch(url, {
+          method: 'get',
+          muteHttpExceptions: true,
+          headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+          validateHttpsCertificates: true
         });
-      });
+        if (res.getResponseCode() !== 200) { self.recordFailure_(null, label); return; }
+        const data = JSON.parse(self.responseBody_(res));
+        self.pickJobs_(data).forEach(function (j) {
+          if (!j || typeof j !== 'object') return;
+          const company = j.employer_name || 'Unknown';
+          const role = j.job_title || '';
+          const jurl = j.job_apply_link || '';
+          if (!jurl) return;
+          const publisher = j.job_publisher || 'jsearch';
+          const loc = [j.job_city, j.job_state, j.job_country].filter(Boolean).join(', ') || (j.job_location || '');
+          const valid = self.job_('jsearch:' + publisher, company, role, jurl, loc,
+            j.job_is_remote, j.job_posted_at_datetime_utc || '', j.job_description || '');
+          if (valid) out.push(valid);
+        });
+      } catch (e) { self.recordFailure_(null, label); }
     });
     return out;
   },
@@ -312,68 +354,78 @@ const Sources = {
     return [];
   },
 
-  fromAts(board) {
+  fromAts(board, deadline) {
     switch (board.type) {
-      case 'greenhouse': return this.fromGreenhouse_(board.slug);
-      case 'lever': return this.fromLever_(board.slug);
-      case 'ashby': return this.fromAshby_(board.slug);
-      case 'workable': return this.fromWorkable_(board.slug);
+      case 'greenhouse': return this.fromGreenhouse_(board.slug, deadline);
+      case 'lever': return this.fromLever_(board.slug, deadline);
+      case 'ashby': return this.fromAshby_(board.slug, deadline);
+      case 'workable': return this.fromWorkable_(board.slug, deadline);
       default: return [];
     }
   },
 
-  fromGreenhouse_(slug) {
+  fromGreenhouse_(slug, deadline) {
     const self = this;
-    const data = this.getJson_('https://boards-api.greenhouse.io/v1/boards/' + slug + '/jobs');
-    return (data.jobs || []).map(function (j) {
-      return {
-        id: self.hashId_('greenhouse:' + slug, slug, j.title, j.absolute_url),
-        source: 'greenhouse:' + slug, company: slug, role: j.title,
-        location: (j.location && j.location.name) || '', mode: '',
-        url: j.absolute_url, posted_date: j.updated_at || ''
-      };
-    });
+    const data = this.getJson_('https://boards-api.greenhouse.io/v1/boards/' + slug + '/jobs', deadline);
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      return j && self.job_('greenhouse:' + slug, slug, j.title, j.absolute_url,
+        j.location && j.location.name, false, j.updated_at || '', '');
+    }).filter(Boolean);
   },
 
-  fromLever_(slug) {
+  fromLever_(slug, deadline) {
     const self = this;
-    const data = this.getJson_('https://api.lever.co/v0/postings/' + slug + '?mode=json');
-    return (data || []).map(function (j) {
-      return {
-        id: self.hashId_('lever:' + slug, slug, j.text, j.hostedUrl),
-        source: 'lever:' + slug, company: slug, role: j.text,
-        location: (j.categories && j.categories.location) || '',
-        mode: (j.categories && j.categories.commitment) || '',
-        url: j.hostedUrl, posted_date: j.createdAt || ''
-      };
-    });
+    const data = this.getJson_('https://api.lever.co/v0/postings/' + slug + '?mode=json', deadline);
+    if (!Array.isArray(data)) return [];
+    return data.map(function (j) {
+      const valid = j && self.job_('lever:' + slug, slug, j.text, j.hostedUrl,
+        j.categories && j.categories.location, false, j.createdAt || '', '');
+      if (valid) valid.mode = (j.categories && j.categories.commitment) || '';
+      return valid;
+    }).filter(Boolean);
   },
 
-  fromAshby_(slug) {
+  fromAshby_(slug, deadline) {
     const self = this;
-    const data = this.getJson_('https://api.ashbyhq.com/posting-api/job-board/' + slug + '?includeCompensation=false');
-    return (data.jobs || []).map(function (j) {
-      return {
-        id: self.hashId_('ashby:' + slug, slug, j.title, j.jobUrl),
-        source: 'ashby:' + slug, company: slug, role: j.title,
-        location: j.location || '', mode: j.isRemote ? 'remote' : '',
-        url: j.jobUrl, posted_date: j.publishedAt || ''
-      };
-    });
+    const data = this.getJson_('https://api.ashbyhq.com/posting-api/job-board/' + slug + '?includeCompensation=false', deadline);
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      const valid = j && self.job_('ashby:' + slug, slug, j.title, j.jobUrl,
+        j.location, j.isRemote, j.publishedAt || '', '');
+      if (valid) valid.mode = j.isRemote ? 'remote' : '';
+      return valid;
+    }).filter(Boolean);
   },
 
-  fromWorkable_(slug) {
+  fromWorkable_(slug, deadline) {
     const self = this;
-    const data = this.getJson_('https://apply.workable.com/api/v1/widget/accounts/' + slug + '?details=true');
-    return (data.jobs || []).map(function (j) {
+    const data = this.getJson_('https://apply.workable.com/api/v1/widget/accounts/' + slug + '?details=true', deadline);
+    if (!data || !Array.isArray(data.jobs)) return [];
+    return data.jobs.map(function (j) {
+      if (!j || typeof j !== 'object') return null;
       const loc = j.location ? [j.location.city, j.location.country].filter(Boolean).join(', ') : '';
       const url = j.url || j.shortlink || '';
-      return {
-        id: self.hashId_('workable:' + slug, slug, j.title, url),
-        source: 'workable:' + slug, company: slug, role: j.title,
-        location: loc, mode: j.remote ? 'remote' : '',
-        url: url, posted_date: j.published_on || ''
-      };
-    });
+      const valid = self.job_('workable:' + slug, slug, j.title, url, loc,
+        j.remote, j.published_on || '', '');
+      if (valid) valid.mode = j.remote ? 'remote' : '';
+      return valid;
+    }).filter(Boolean);
+  },
+
+  job_(source, company, role, url, location, remote, postedDate, descr) {
+    if (!url || !role) return null;
+    const safeUrl = Validation.safeHttpsUrl(url);
+    if (!safeUrl) return null;
+    company = String(company || 'Unknown').slice(0, 200);
+    role = String(role).trim().slice(0, 300);
+    if (!role) return null;
+    return {
+      id: this.hashId_(source, company, role, safeUrl),
+      source: source, company: company, role: role,
+      location: String(location || '').slice(0, 300), mode: remote ? 'remote' : '',
+      url: safeUrl, posted_date: String(postedDate || '').slice(0, 80),
+      descr: String(descr || '').slice(0, 12000)
+    };
   }
 };

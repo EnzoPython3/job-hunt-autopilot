@@ -51,7 +51,8 @@ function seedConfigTab_() {
     ['DAILY_SOURCE_CAP', Config.defaults.DAILY_SOURCE_CAP],
     ['DAILY_APPROVAL_N', Config.defaults.DAILY_APPROVAL_N],
     ['CHUNK_SIZE', Config.defaults.CHUNK_SIZE],
-    ['AGENCY_DRAFTS_PER_RUN', Config.defaults.AGENCY_DRAFTS_PER_RUN]
+    ['AGENCY_DRAFTS_PER_RUN', Config.defaults.AGENCY_DRAFTS_PER_RUN],
+    ['MAINTENANCE_CHECKS', Config.defaults.MAINTENANCE_CHECKS]
   ];
   sh.getRange(2, 1, rows.length, 2).setValues(rows);
 }
@@ -61,7 +62,7 @@ function seedConfigTab_() {
  * (columns: name,email,focus) and this seeds the Contacts tab from it.
  */
 function seedAgenciesFromSample_() {
-  const csv = Config.get('AGENCIES_CSV');
+  const csv = Config.get(Config.KEYS.AGENCIES_CSV);
   if (!csv) return;
   const contacts = Crm.readAll(Crm.TABS.CONTACTS);
   if (contacts.length > 0) return;

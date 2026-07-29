@@ -3,6 +3,15 @@
  * Checks which Script Properties are set and live-tests Adzuna + Gemini + the sheet.
  */
 function diagnose() {
+  try {
+    return diagnose_();
+  } catch (e) {
+    Alerts.notify('diagnose', e);
+    throw e;
+  }
+}
+
+function diagnose_() {
   const out = [];
   const P = PropertiesService.getScriptProperties();
   const has = function (k) { const v = P.getProperty(k); return v ? ('SET (' + String(v).length + ' chars)') : 'NOT SET'; };
@@ -23,16 +32,14 @@ function diagnose() {
       const url = 'https://api.adzuna.com/v1/api/jobs/za/search/1?app_id=' + encodeURIComponent(appId) +
         '&app_key=' + encodeURIComponent(appKey) + '&results_per_page=3&what=' +
         encodeURIComponent('customer service') + '&sort_by=date&max_days_old=21&content-type=application/json';
-      const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, validateHttpsCertificates: true });
       out.push('  HTTP ' + res.getResponseCode());
-      const body = res.getContentText();
       try {
-        const d = JSON.parse(body);
-        if (d.exception) out.push('  exception: ' + d.exception);
-        else out.push('  count: ' + d.count + ', results returned: ' + (d.results ? d.results.length : 0));
-      } catch (e) { out.push('  body: ' + body.slice(0, 200)); }
+        const d = JSON.parse(diagnosticResponseBody_(res));
+        out.push('  response shape: ' + (d && Array.isArray(d.results) ? 'valid' : 'unexpected'));
+      } catch (e) { out.push('  response shape: invalid JSON'); }
     }
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== JSearch live test ===');
   try {
@@ -45,36 +52,30 @@ function diagnose() {
         '&country=za&date_posted=week';
       const res = UrlFetchApp.fetch(url, {
         method: 'get', muteHttpExceptions: true,
-        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' }
+        headers: { 'X-RapidAPI-Key': key, 'X-RapidAPI-Host': 'jsearch.p.rapidapi.com' },
+        validateHttpsCertificates: true
       });
       out.push('  HTTP ' + res.getResponseCode());
-      const body = res.getContentText();
-      if (res.getResponseCode() !== 200) {
-        // 404/403 here is a RapidAPI subscription/key issue - the body says which.
-        out.push('  body: ' + body.slice(0, 200));
-      } else {
+      if (res.getResponseCode() !== 200) out.push('  response shape: unavailable');
+      else {
         try {
-          const d = JSON.parse(body);
-          const arr = Sources.pickJobs_(d);
-          const n = arr.length;
-          out.push('  results returned: ' + n + (n
-            ? ('  sample link: ' + (arr[0].job_apply_link || '').slice(0, 80))
-            : ('  top-level keys: ' + Object.keys(d).join(',') + '  body: ' + body.slice(0, 200))));
-        } catch (e) { out.push('  body: ' + body.slice(0, 200)); }
+          const d = JSON.parse(diagnosticResponseBody_(res));
+          out.push('  response shape: ' + (Sources.pickJobs_(d).length ? 'valid' : 'empty or unexpected'));
+        } catch (e) { out.push('  response shape: invalid JSON'); }
       }
     }
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== Gemini live test ===');
   try {
-    const r = Gemini.generate('Reply with exactly: ok', { maxOutputTokens: 10 });
-    out.push('  reply: ' + String(r).trim().slice(0, 40));
-  } catch (e) { out.push('  ERROR: ' + e); }
+    Gemini.generate('Reply with exactly: ok', { maxOutputTokens: 10 });
+    out.push('  reply: received');
+  } catch (e) { out.push('  ERROR: request failed'); }
 
   out.push('=== Sheet ===');
   try {
     out.push('  Opportunities rows: ' + Crm.readAll(Crm.TABS.OPPORTUNITIES).length);
-  } catch (e) { out.push('  ERROR: ' + e); }
+  } catch (e) { out.push('  ERROR: sheet read failed'); }
 
   const report = out.join('\n');
   Logger.log(report);
@@ -90,17 +91,31 @@ function diagnose() {
  */
 function pruneDeadLinks() {
   try {
+    const work = function () {
+      return pruneDeadLinks_();
+    };
+    return (typeof Runtime !== 'undefined' && Runtime.withScriptLock)
+      ? Runtime.withScriptLock('pruneDeadLinks', 5000, work)
+      : work();
+  } catch (e) {
+    Alerts.notify('pruneDeadLinks', e);
+    throw e;
+  }
+}
+
+function pruneDeadLinks_() {
     Crm.ensureSchema();
-    const MAX_CHECKS = 80;                          // lower cap: slow redirect-follows add up
-    const deadline = Date.now() + 4.5 * 60 * 1000;  // stop before the 6-minute hard kill
+    const MAX_CHECKS = Config.tunable('MAINTENANCE_CHECKS');
+    const deadline = (typeof Runtime !== 'undefined' && Runtime.deadlineMs)
+      ? Runtime.deadlineMs(270000) : Date.now() + 4.5 * 60 * 1000;
     let budget = MAX_CHECKS;
     let oppDead = 0, oppChecked = 0, apprDead = 0, apprChecked = 0, capped = false;
 
     Crm.readAll(Crm.TABS.OPPORTUNITIES).forEach(function (o) {
       if (!o.url || o.status === 'dead_link') return;
-      if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
+      if (budget <= 0 || ((typeof Runtime !== 'undefined' && Runtime.shouldStop) ? Runtime.shouldStop(deadline) : Date.now() > deadline)) { capped = true; return; }
       budget--; oppChecked++;
-      if (!Sources.linkAlive_(o.url)) {
+      if (!Sources.linkAlive_(o.url, deadline)) {
         Crm.updateRow(Crm.TABS.OPPORTUNITIES, o._row, {
           status: 'dead_link',
           notes: String(o.notes || '') + ' [pruned: dead link]',
@@ -112,9 +127,9 @@ function pruneDeadLinks() {
 
     Crm.readAll(Crm.TABS.APPROVALS).forEach(function (a) {
       if (!a.url || String(a.decision || '').trim()) return;   // leave already-decided rows alone
-      if (budget <= 0 || Date.now() > deadline) { capped = true; return; }
+      if (budget <= 0 || ((typeof Runtime !== 'undefined' && Runtime.shouldStop) ? Runtime.shouldStop(deadline) : Date.now() > deadline)) { capped = true; return; }
       budget--; apprChecked++;
-      if (!Sources.linkAlive_(a.url)) {
+      if (!Sources.linkAlive_(a.url, deadline)) {
         Crm.updateRow(Crm.TABS.APPROVALS, a._row, {
           decision: 'Skip - dead link',
           edited_notes: String(a.edited_notes || '') + ' [pruned: dead link]'
@@ -128,8 +143,10 @@ function pruneDeadLinks() {
       (capped ? ' CAPPED (hit the ' + MAX_CHECKS + '-check or time budget) - re-run to continue.' : ' Done.');
     Logger.log(report);
     return report;
-  } catch (e) {
-    Alerts.notify('pruneDeadLinks', e);
-    throw e;
-  }
+}
+
+function diagnosticResponseBody_(res) {
+  const body = String(res.getContentText() || '');
+  if (body.length > 20000) throw new Error('diagnostic response too large');
+  return body;
 }
